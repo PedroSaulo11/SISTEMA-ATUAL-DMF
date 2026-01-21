@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>DMF Enterprise - Fluxo Financeiro v2.0</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="assistant.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<div id="loginSection" class="login-screen">
+    <div class="login-box">
+        <h2 style="margin-bottom: 20px; color: var(--primary)">DMF Empreendimentos</h2>
+        <div class="form-group">
+            <input type="text" id="loginInput" placeholder="Usuário ou Email" class="styled-input">
+            <input type="password" id="loginPass" placeholder="Senha" class="styled-input">
+        </div>
+        <button onclick="system.auth.login()" class="btn btn-primary" style="width: 100%">Acessar Sistema</button>
+        <p style="font-size: 11px; color: #64748b; margin-top: 15px;">Acesso restrito a colaboradores autorizados.</p>
+    </div>
+</div>
+
+<div id="appSection" class="app-wrapper hidden">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h3>DMF FLUXO</h3>
+            <p id="userRoleBadge" style="font-size: 10px; opacity: 0.8"></p>
+        </div>
+        <nav style="margin-top: 40px; flex: 1">
+            <button class="btn-side active" data-nav="dashboard">Dashboard</button>
+            <button class="btn-side" data-nav="payments">Fluxo de Pagamentos</button>
+            <button class="btn-side" data-nav="audit">Logs de Auditoria</button>
+            <button id="adminMenu" class="btn-side hidden" data-nav="admin">Administração</button>
+            <button class="btn-side" data-nav="assistente">Assistente</button>
+        </nav>
+        <button class="btn btn-logout" onclick="system.auth.logout()">Sair</button>
+    </aside>
+
+    <main class="main-content">
+        <section id="dashboard" class="view">
+            <div class="card">
+                <h2>Visão Geral Financeira</h2>
+                <div class="stats-grid">
+                    <div class="stat-item">Total Bruto<br><span id="totalBruto">R$ 0,00</span></div>
+                    <div class="stat-item">Assinados<br><span id="totalAssinados">0</span></div>
+                    <div class="stat-item">Aguardando<br><span id="totalPendentes">0</span></div>
+                </div>
+                <canvas id="financeChart" height="100"></canvas>
+            </div>
+        </section>
+
+        <section id="payments" class="view hidden">
+            <div class="card">
+                <div class="flex-header">
+                    <h2>Fluxo de Pagamentos</h2>
+                    <div class="actions">
+                        <button class="btn btn-danger" onclick="system.data.clearAll()">Remover Todo Fluxo</button>
+                        <button class="btn btn-ghost" onclick="system.data.export()">Exportar XLSX</button>
+                        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Importar Conta Azul</button>
+                        <button class="btn btn-success" onclick="system.data.syncFromAPI()">Sincronizar API Conta Azul</button>
+                        <button class="btn btn-primary" onclick="system.ui.openModal('addPaymentModal')">Adicionar Pagamento</button> <!-- ALTERADO -->
+                    </div>
+                </div>
+                <input type="file" id="fileInput" accept=".xlsx" class="hidden" onchange="system.data.import(this)">
+                
+                <div class="data-table-wrapper" style="margin-top: 20px;">
+                    <table id="paymentsTable">
+                        <thead>
+                            <tr>
+                                <th>Fornecedor</th>
+                                <th>Data</th>
+                                <th>Descrição</th>
+                                <th>Valor</th>
+                                <th>Centro de Custo</th>
+                                <th>Status</th>
+                                <th>Assinatura</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody id="paymentsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="audit" class="view hidden">
+            <div class="card">
+                <h2>Histórico de Operações</h2>
+                <table id="auditLogTable">
+                    <thead>
+                        <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
+                    </thead>
+                    <tbody id="auditBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="admin" class="view hidden">
+            <div class="card">
+                <h2>Administração</h2>
+                <div class="admin-tabs">
+                    <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
+                    <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
+                </div>
+                <div id="adminContent">
+                    <div id="usersTab" class="admin-tab-content">
+                        <h3>Usuários do Sistema</h3>
+                        <button class="btn btn-primary" onclick="system.ui.openCreateUserModal()">Criar Usuário</button>
+                        <div id="userGrid"></div>
+                    </div>
+                    <div id="rolesTab" class="admin-tab-content hidden">
+                        <h3>Cargos e Permissões</h3>
+                        <button class="btn btn-primary" onclick="system.ui.openCreateRoleModal()">Criar Novo Cargo</button>
+                        <div id="rolesGrid"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="assistente" class="view hidden">
+            <div class="card">
+                <h2>Assistente Virtual</h2>
+                <div id="chatContainer" class="chat-container">
+                    <div id="chatMessages" class="chat-messages"></div>
+                    <div class="chat-input-area">
+                        <input type="text" id="chatInput" placeholder="Digite sua pergunta..." class="chat-input">
+                        <button onclick="assistant.sendMessage()" class="btn btn-primary chat-send-btn">Enviar</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<!-- Modal for Creating User -->
+<div id="createUserModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="system.ui.closeModal('createUserModal')">&times;</span>
+        <h3>Criar Novo Usuário</h3>
+        <form id="createUserForm">
+            <div class="form-group">
+                <label for="userName">Nome:</label>
+                <input type="text" id="userName" name="userName" required>
+            </div>
+            <div class="form-group">
+                <label for="userUsername">Usuário:</label>
+                <input type="text" id="userUsername" name="userUsername" required>
+            </div>
+            <div class="form-group">
+                <label for="userEmail">Email:</label>
+                <input type="email" id="userEmail" name="userEmail" required>
+            </div>
+            <div class="form-group">
+                <label for="userPassword">Senha:</label>
+                <input type="password" id="userPassword" name="userPassword" required>
+            </div>
+            <div class="form-group">
+                <label for="userRole">Cargo:</label>
+                <select id="userRole" name="userRole" required>
+                    <option value="">Selecione um cargo</option>
+                    <option value="admin">Admin</option>
+                    <option value="gestor">Gestor</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Criar Usuário</button>
+        </form>
+    </div>
+</div>
+
+<!-- Modal for Creating Role -->
+<div id="createRoleModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="system.ui.closeModal('createRoleModal')">&times;</span>
+        <h3>Criar Novo Cargo</h3>
+        <form id="createRoleForm">
+            <div class="form-group">
+                <label for="roleName">Nome do Cargo:</label>
+                <input type="text" id="roleName" name="roleName" required>
+            </div>
+            <div class="form-group">
+                <label>Permissões:</label>
+                <div class="permissions">
+                    <label><input type="checkbox" id="rolePermSignPayments"> Permitir que usuário faça assinatura de fluxo</label>
+                    <label><input type="checkbox" id="rolePermManageUsers"> Permitir que usuário possa gerenciar usuários</label>
+                    <label><input type="checkbox" id="rolePermViewAdmin"> Permitir que usuário veja a aba administração</label>
+                    <label><input type="checkbox" id="rolePermAccessAudit"> Permitir que usuário possa acessar Logs de Auditoria</label>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Criar Cargo</button>
+        </form>
+    </div>
+</div>
+
+<!-- Modal for Editing User -->
+<div id="editUserModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="system.ui.closeModal('editUserModal')">&times;</span>
+        <h3>Editar Usuário</h3>
+        <form id="editUserForm">
+            <input type="hidden" id="editUserId" name="editUserId">
+            <div class="form-group">
+                <label for="editUserName">Nome:</label>
+                <input type="text" id="editUserName" name="editUserName" required>
+            </div>
+            <div class="form-group">
+                <label for="editUserUsername">Usuário:</label>
+                <input type="text" id="editUserUsername" name="editUserUsername" required>
+            </div>
+            <div class="form-group">
+                <label for="editUserEmail">Email:</label>
+                <input type="email" id="editUserEmail" name="editUserEmail" required>
+            </div>
+            <div class="form-group">
+                <label for="editUserRole">Cargo:</label>
+                <select id="editUserRole" name="editUserRole" required>
+                    <option value="admin">Admin</option>
+                    <option value="gestor">Gestor</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Atualizar Usuário</button>
+        </form>
+    </div>
+</div>
+
+<!-- Modal for Changing Password -->
+<div id="changePasswordModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="system.ui.closeModal('changePasswordModal')">&times;</span>
+        <h3>Trocar Senha</h3>
+        <p>Alterando senha para: <strong id="changePasswordUserName"></strong></p>
+        <form id="changePasswordForm">
+            <input type="hidden" id="changePasswordUserId" name="changePasswordUserId">
+            <div class="form-group">
+                <label for="newPassword">Nova Senha:</label>
+                <input type="password" id="newPassword" name="newPassword" required>
+            </div>
+            <div class="form-group">
+                <label for="confirmPassword">Confirmar Senha:</label>
+                <input type="password" id="confirmPassword" name="confirmPassword" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Alterar Senha</button>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Adicionar Pagamento --> <!-- ALTERADO -->
+<div id="addPaymentModal" class="modal"> <!-- ALTERADO -->
+  <div class="modal-content">
+    <span class="close" onclick="system.ui.closeModal('addPaymentModal')">&times;</span>
+    <h3>Adicionar Pagamento</h3>
+    <form id="addPaymentForm"> <!-- ALTERADO -->
+      <div class="form-group">
+        <label for="addFornecedor">Fornecedor:</label>
+        <input type="text" id="addFornecedor" name="fornecedor" required> <!-- ALTERADO -->
+      </div>
+      <div class="form-group">
+        <label for="addData">Data:</label>
+        <input type="date" id="addData" name="data" required> <!-- ALTERADO -->
+      </div>
+      <div class="form-group">
+        <label for="addDescricao">Descrição:</label>
+        <input type="text" id="addDescricao" name="descricao"> <!-- ALTERADO -->
+      </div>
+      <div class="form-group">
+        <label for="addValor">Valor:</label>
+        <input type="text" id="addValor" name="valor" placeholder="Ex.: 1.234,56" required> <!-- ALTERADO -->
+      </div>
+      <div class="form-group">
+        <label for="addCentro">Centro de Custo:</label>
+        <input type="text" id="addCentro" name="centro" placeholder="Geral" required list="centrosDataList"> <!-- ALTERADO -->
+        <datalist id="centrosDataList"></datalist> <!-- ALTERADO -->
+      </div>
+      <button type="submit" class="btn btn-primary">Adicionar</button> <!-- ALTERADO -->
+    </form>
+  </div>
+</div>
+
+<script src="script.js"></script>
+<script src="assistant.js"></script>
+</body>
+</html>
