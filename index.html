@@ -5,8 +5,10 @@
     <title>DMF Enterprise - Fluxo Financeiro v2.0</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="assistant.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
@@ -34,6 +36,7 @@
             <button class="btn-side" data-nav="audit">Logs de Auditoria</button>
             <button id="adminMenu" class="btn-side hidden" data-nav="admin">Administração</button>
             <button class="btn-side" data-nav="assistente">Assistente</button>
+            <button class="btn-side" data-nav="cobli">Cobli</button>
         </nav>
         <button class="btn btn-logout" onclick="system.auth.logout()">Sair</button>
     </aside>
@@ -129,6 +132,22 @@
                         <button onclick="assistant.sendMessage()" class="btn btn-primary chat-send-btn">Enviar</button>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <section id="cobli" class="view hidden">
+            <div class="card">
+                <h2>Painel Cobli</h2>
+                <div class="stats-grid">
+                    <div class="stat-item">Veículos Cadastrados<br><span id="veiculosCadastrados">0</span></div>
+                    <div class="stat-item">Locais de Interesse<br><span id="locaisInteresse">0</span></div>
+                    <div class="stat-item">Eventos Velocidade Veículo<br><span id="eventosVelocidadeVeiculo">0</span></div>
+                    <div class="stat-item">Eventos Velocidade Via<br><span id="eventosVelocidadeVia">0</span></div>
+                    <div class="stat-item">Rotas com Veículo<br><span id="rotasComVeiculo">0</span></div>
+                    <div class="stat-item">Rotas sem Veículo<br><span id="rotasSemVeiculo">0</span></div>
+                    <div class="stat-item">Produtividade Média Frota<br><span id="produtividadeMedia">0%</span></div>
+                </div>
+                <div id="mapContainer" style="height: 400px; margin-top: 20px;"></div>
             </div>
         </section>
     </main>

@@ -1,5 +1,7 @@
 class IntelligentAssistant {
     constructor() {
+        // Expose instance for inline handlers and other modules.
+        window.assistant = this;
         this.history = JSON.parse(localStorage.getItem('dmf_assistant_history')) || [];
         this.memoria = JSON.parse(localStorage.getItem('dmf_assistant_memoria')) || [];
         this.learningData = JSON.parse(localStorage.getItem('dmf_assistant_learning')) || {}; // ALTERADO
@@ -85,9 +87,19 @@ class IntelligentAssistant {
 
     // Resposta otimizada, com base no aprendizado
     getOptimizedAnswer(question) { // ALTERADO
+        if (!this.shouldUseLearning(question)) return null;
         const key = this.normalizeText(question);
         const learnedAnswers = this.getLearning(key);
         return learnedAnswers.length ? learnedAnswers[learnedAnswers.length - 1] : "Não tenho uma resposta pronta ainda, mas estou aprendendo!";
+    }
+
+    // Evitar usar aprendizado para saudações ou mensagens muito curtas
+    shouldUseLearning(question) {
+        const normalized = this.normalizeText(question);
+        if (!normalized) return false;
+        if (normalized.length < 3) return false;
+        const saudacoes = ['oi', 'ola', 'bomdia', 'boatarde', 'boanoite'];
+        return !saudacoes.some(s => normalized.includes(s));
     }
 
     analisarIntencao(question) {
@@ -189,7 +201,7 @@ class IntelligentAssistant {
 
         // Verificar resposta otimizada baseada no aprendizado
         const optimized = this.getOptimizedAnswer(question); // ALTERADO
-        if (optimized !== "Não tenho uma resposta pronta ainda, mas estou aprendendo!") { // ALTERADO
+        if (optimized && optimized !== "Não tenho uma resposta pronta ainda, mas estou aprendendo!") { // ALTERADO
             return optimized; // ALTERADO
         } // ALTERADO
 
@@ -381,6 +393,19 @@ class IntelligentAssistant {
             return `Hoje, ${usuarios.join(', ')} assinaram pagamentos.`;
         }
 
+        if (intencao.assunto === 'assinatura') {
+            if (brain.assinaturas.length === 0) return "Não há assinaturas registradas.";
+            const recentes = brain.assinaturas
+                .slice()
+                .sort((a, b) => new Date(b.assinatura.dataISO) - new Date(a.assinatura.dataISO))
+                .slice(0, 5);
+            let resposta = "Últimas assinaturas registradas:\n";
+            recentes.forEach(a => {
+                resposta += `- ${a.fornecedor} assinado por ${a.assinatura.usuarioNome} em ${new Date(a.assinatura.dataISO).toLocaleString()}\n`;
+            });
+            return resposta.trim();
+        }
+
         if (intencao.assunto === 'usuario') {
             const usuarioLogado = brain.usuarioLogado;
             if (usuarioLogado) {
@@ -455,6 +480,7 @@ class IntelligentAssistant {
     responderGeral(intencao) {
         const saudacoes = ['oi', 'ola', 'bom dia', 'boa tarde', 'boa noite'];
         const pergunta = intencao.perguntaOriginal.toLowerCase();
+        const perguntaNorm = this.normalizeText(intencao.perguntaOriginal);
 
         if (saudacoes.some(s => pergunta.includes(s))) {
             return "Olá! Sou o assistente inteligente do Sistema DMF. Como posso te ajudar hoje?";
@@ -465,7 +491,9 @@ class IntelligentAssistant {
         }
 
         // Verificar perguntas frequentes na memória
-        const perguntaFrequente = this.memoria.find(m => m.frequencia > 2);
+        const perguntaFrequente = this.memoria.find(m =>
+            m.frequencia > 2 && this.normalizeText(m.pergunta) === perguntaNorm
+        );
         if (perguntaFrequente) {
             return "Esta é uma pergunta frequente. " + this.gerarResposta(perguntaFrequente.intencao);
         }
@@ -589,4 +617,5 @@ class IntelligentAssistant {
     }
 }
 
-const assistant = new IntelligentAssistant();
+// Initialize and keep a global reference for inline handlers.
+new IntelligentAssistant();

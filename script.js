@@ -57,6 +57,7 @@ class DMFSystem {
         this.ui = new UIManager(this);
         this.audit = new AuditLogger(this);
         this.admin = new AdminManager(this);
+        this.cobli = new CobliManager(this);
 
         this.checkSession();
     }
@@ -329,7 +330,7 @@ class DataProcessor {
     }
 
     syncFromAPI() {
-        fetch('http://localhost:3000/api/payments')
+        fetch('http://localhost:3001/api/payments')
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -368,7 +369,7 @@ class DataProcessor {
             })
             .catch(error => {
                 console.error('Erro ao sincronizar com API Conta Azul:', error);
-                alert('Erro ao sincronizar com a API Conta Azul. Verifique o console para detalhes.');
+                alert(`Erro ao sincronizar com a API Conta Azul: ${error.message || error}. Verifique o console para detalhes.`);
             });
     }
 }
@@ -382,6 +383,13 @@ class UIManager {
         // Update active button
         document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
+
+        // Special handling for Cobli tab
+        if (viewId === 'cobli') {
+            this.core.cobli.navigateToCobli().catch(err => {
+                console.error('Erro ao carregar Cobli:', err.message);
+            });
+        }
     }
 
     showLogin() {
@@ -956,6 +964,215 @@ class AdminManager {
         const rolePerms = this.getRolePermissions(roleName);        // ALTERADO
         const userPerms = (user && user.additionalPermissions) || [];
         return rolePerms.includes('all') || rolePerms.includes(permission) || userPerms.includes(permission);
+    }
+}
+
+class CobliManager {
+    constructor(core) {
+        this.core = core;
+        this.map = null;
+        this.markers = [];
+        this.vehicles = [];
+        this.updateInterval = null;
+    }
+
+    async navigateToCobli() {
+        await this.updateStats();
+        await this.loadVehiclesAndMap();
+    }
+
+    async cobliProxyFetch(path, params = {}) {
+        if (!path) {
+            throw new Error('Cobli path not configured');
+        }
+
+        const apiBase = window.DMF_API_BASE || 'http://localhost:3001';
+        const url = new URL('/api/cobli/proxy', apiBase);
+        url.searchParams.set('path', path);
+        Object.entries(params).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                url.searchParams.set(key, value);
+            }
+        });
+
+        const response = await fetch(url.toString(), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Cobli proxy error: ${response.status}`);
+        }
+
+        return response.json();
+    }
+
+    extractArray(payload) {
+        if (Array.isArray(payload)) return payload;
+        if (payload && Array.isArray(payload.items)) return payload.items;
+        if (payload && Array.isArray(payload.data)) return payload.data;
+        return [];
+    }
+
+    extractNumber(payload, fallback = 0) {
+        if (typeof payload === 'number') return payload;
+        if (payload && typeof payload.count === 'number') return payload.count;
+        if (payload && typeof payload.total === 'number') return payload.total;
+        return fallback;
+    }
+
+    async updateStats() {
+        const elements = {
+            veiculos: document.getElementById('veiculosCadastrados'),
+            locais: document.getElementById('locaisInteresse'),
+            velVeiculo: document.getElementById('eventosVelocidadeVeiculo'),
+            velVia: document.getElementById('eventosVelocidadeVia'),
+            rotasCom: document.getElementById('rotasComVeiculo'),
+            rotasSem: document.getElementById('rotasSemVeiculo'),
+            produtividade: document.getElementById('produtividadeMedia')
+        };
+
+        Object.values(elements).forEach(el => {
+            if (el) el.innerText = '...';
+        });
+
+        try {
+            // Configure the Cobli API paths below to match your Cobli account.
+            const COBLI_PATHS = {
+                vehicles: '', // ex: '/vehicles'
+                interestLocations: '', // ex: '/locations'
+                speedEventsVehicle: '', // ex: '/events/speed/vehicle'
+                speedEventsRoad: '', // ex: '/events/speed/road'
+                routesWithVehicle: '', // ex: '/routes?with_vehicle=true'
+                routesWithoutVehicle: '', // ex: '/routes?with_vehicle=false'
+                productivity: '' // ex: '/fleet/productivity'
+            };
+
+            const [vehiclesResp, interestResp, speedVehResp, speedRoadResp, routesWithResp, routesWithoutResp, productivityResp] =
+                await Promise.all([
+                    COBLI_PATHS.vehicles ? this.cobliProxyFetch(COBLI_PATHS.vehicles) : [],
+                    COBLI_PATHS.interestLocations ? this.cobliProxyFetch(COBLI_PATHS.interestLocations) : [],
+                    COBLI_PATHS.speedEventsVehicle ? this.cobliProxyFetch(COBLI_PATHS.speedEventsVehicle) : [],
+                    COBLI_PATHS.speedEventsRoad ? this.cobliProxyFetch(COBLI_PATHS.speedEventsRoad) : [],
+                    COBLI_PATHS.routesWithVehicle ? this.cobliProxyFetch(COBLI_PATHS.routesWithVehicle) : [],
+                    COBLI_PATHS.routesWithoutVehicle ? this.cobliProxyFetch(COBLI_PATHS.routesWithoutVehicle) : [],
+                    COBLI_PATHS.productivity ? this.cobliProxyFetch(COBLI_PATHS.productivity) : null
+                ]);
+
+            const vehicles = this.extractArray(vehiclesResp);
+            elements.veiculos && (elements.veiculos.innerText = vehicles.length);
+            elements.locais && (elements.locais.innerText = this.extractArray(interestResp).length);
+            elements.velVeiculo && (elements.velVeiculo.innerText = this.extractArray(speedVehResp).length);
+            elements.velVia && (elements.velVia.innerText = this.extractArray(speedRoadResp).length);
+            elements.rotasCom && (elements.rotasCom.innerText = this.extractArray(routesWithResp).length);
+            elements.rotasSem && (elements.rotasSem.innerText = this.extractArray(routesWithoutResp).length);
+
+            if (elements.produtividade) {
+                const productivityValue = this.extractNumber(productivityResp, null);
+                elements.produtividade.innerText = productivityValue === null
+                    ? '-'
+                    : `${Number(productivityValue).toFixed(1)}%`;
+            }
+        } catch (error) {
+            console.error('Erro ao buscar estatísticas Cobli:', error.message);
+            Object.values(elements).forEach(el => {
+                if (el) el.innerText = '-';
+            });
+        }
+    }
+
+    async loadVehiclesAndMap() {
+        try {
+            const COBLI_VEHICLES_PATH = ''; // ex: '/vehicles'
+            const COBLI_POSITIONS_PATH = ''; // ex: '/vehicles/positions'
+
+            let vehiclesPayload = [];
+            if (COBLI_VEHICLES_PATH) {
+                vehiclesPayload = await this.cobliProxyFetch(COBLI_VEHICLES_PATH);
+            }
+
+            let positionsPayload = null;
+            if (COBLI_POSITIONS_PATH) {
+                positionsPayload = await this.cobliProxyFetch(COBLI_POSITIONS_PATH);
+            }
+
+            const vehicles = this.extractArray(vehiclesPayload);
+            const positions = this.extractArray(positionsPayload);
+
+            const positionsById = new Map();
+            positions.forEach(p => {
+                const key = p.vehicleId || p.vehicle_id || p.id;
+                if (key) positionsById.set(String(key), p);
+            });
+
+            this.vehicles = vehicles.map(vehicle => {
+                const id = vehicle.id || vehicle.vehicleId || vehicle.vehicle_id;
+                const position = positionsById.get(String(id)) || vehicle.position || vehicle.location || {};
+                const lat = position.lat || position.latitude || vehicle.lat || vehicle.latitude;
+                const lng = position.lng || position.longitude || vehicle.lng || vehicle.longitude;
+
+                return {
+                    id: id || vehicle.plate || vehicle.name,
+                    name: vehicle.name || vehicle.plate || `Veículo ${id || ''}`.trim(),
+                    lat: Number(lat),
+                    lng: Number(lng)
+                };
+            }).filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lng));
+
+            this.initMap();
+            this.updateMarkers();
+        } catch (error) {
+            console.error('Erro ao carregar veículos Cobli:', error.message);
+        }
+    }
+
+    initMap() {
+        if (this.map) return; // Already initialized
+
+        const mapContainer = document.getElementById('mapContainer');
+        if (!mapContainer) return;
+
+        // Initialize Leaflet map centered on Brazil
+        this.map = L.map('mapContainer').setView([-15.7801, -47.9292], 4);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(this.map);
+
+        // Add markers for vehicles
+        this.updateMarkers();
+    }
+
+    updateMarkers() {
+        if (!this.map) return;
+
+        // Clear existing markers
+        this.markers.forEach(marker => this.map.removeLayer(marker));
+        this.markers = [];
+
+        // Add new markers
+        this.vehicles.forEach(vehicle => {
+            const marker = L.marker([vehicle.lat, vehicle.lng])
+                .addTo(this.map)
+                .bindPopup(`<b>${vehicle.name}</b><br>Lat: ${vehicle.lat.toFixed(4)}<br>Lng: ${vehicle.lng.toFixed(4)}`);
+            this.markers.push(marker);
+        });
+    }
+
+    startRealTimeUpdates() {
+        if (this.updateInterval) return; // Already running
+
+        this.updateInterval = setInterval(() => {
+            // Placeholder for real-time updates via Cobli (polling or webhooks)
+            this.loadVehiclesAndMap();
+        }, 5000); // Update every 5 seconds
+    }
+
+    stopRealTimeUpdates() {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = null;
+        }
     }
 }
 

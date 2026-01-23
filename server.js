@@ -2,13 +2,21 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+// Serve static files
+app.use(express.static(__dirname));
 
 // In-memory storage for tokens (in production, use a database or secure storage)
 let accessToken = process.env.CONTA_AZUL_ACCESS_TOKEN;
@@ -19,6 +27,86 @@ let tokenExpiry = null; // Will be set based on JWT expiry
 const CLIENT_ID = process.env.CONTA_AZUL_CLIENT_ID;
 const CLIENT_SECRET = process.env.CONTA_AZUL_CLIENT_SECRET;
 const TOKEN_URL = process.env.CONTA_AZUL_TOKEN_URL;
+
+// Cobli Configuration
+const COBLI_API_BASE_URL = process.env.COBLI_API_BASE_URL;
+const COBLI_API_TOKEN = process.env.COBLI_API_TOKEN;
+const COBLI_AUTH_HEADER = process.env.COBLI_AUTH_HEADER || 'Authorization';
+const COBLI_AUTH_SCHEME = process.env.COBLI_AUTH_SCHEME || 'Bearer';
+const COBLI_WEBHOOK_SECRET = process.env.COBLI_WEBHOOK_SECRET;
+const COBLI_WEBHOOK_SIGNATURE_HEADER = process.env.COBLI_WEBHOOK_SIGNATURE_HEADER;
+
+function buildCobliHeaders(extraHeaders = {}) {
+  if (!COBLI_API_TOKEN) {
+    throw new Error('COBLI_API_TOKEN is not configured');
+  }
+
+  const headers = {
+    ...extraHeaders
+  };
+
+  const headerValue = COBLI_AUTH_SCHEME
+    ? `${COBLI_AUTH_SCHEME} ${COBLI_API_TOKEN}`
+    : COBLI_API_TOKEN;
+
+  headers[COBLI_AUTH_HEADER] = headerValue;
+  return headers;
+}
+
+function verifyCobliSignature(req) {
+  if (!COBLI_WEBHOOK_SECRET || !COBLI_WEBHOOK_SIGNATURE_HEADER) {
+    return true;
+  }
+
+  const signature = req.get(COBLI_WEBHOOK_SIGNATURE_HEADER);
+  if (!signature) {
+    return false;
+  }
+
+  if (!req.rawBody) {
+    return false;
+  }
+
+  const rawBody = req.rawBody;
+  const expected = crypto
+    .createHmac('sha256', COBLI_WEBHOOK_SECRET)
+    .update(rawBody)
+    .digest('hex');
+
+  const normalizedSignature = signature.startsWith('sha256=')
+    ? signature.slice('sha256='.length)
+    : signature;
+
+  if (normalizedSignature.length !== expected.length) {
+    return false;
+  }
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(normalizedSignature, 'hex'),
+      Buffer.from(expected, 'hex')
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+async function cobliRequest(method, path, options = {}) {
+  if (!COBLI_API_BASE_URL) {
+    throw new Error('COBLI_API_BASE_URL is not configured');
+  }
+
+  const url = `${COBLI_API_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+  const headers = buildCobliHeaders(options.headers || {});
+
+  return axios({
+    method,
+    url,
+    headers,
+    params: options.params,
+    data: options.data
+  });
+}
 
 // Function to decode JWT and get expiry
 function getTokenExpiry(token) {
@@ -98,6 +186,47 @@ app.get('/api/payments', async (req, res) => {
     console.error('Error fetching payments:', error.response?.data || error.message);
     res.status(500).json({ error: 'Failed to fetch payments from Conta Azul API' });
   }
+});
+
+// Cobli health check
+app.get('/api/cobli/health', (req, res) => {
+  res.json({
+    configured: !!COBLI_API_BASE_URL && !!COBLI_API_TOKEN,
+    base_url: COBLI_API_BASE_URL || null
+  });
+});
+
+// Cobli generic proxy (use ?path=/endpoint and optional query params)
+app.all('/api/cobli/proxy', async (req, res) => {
+  try {
+    const path = req.query.path;
+    if (!path) {
+      return res.status(400).json({ error: 'Missing required query param: path' });
+    }
+
+    const { path: _, ...params } = req.query;
+    const response = await cobliRequest(req.method, path, {
+      params,
+      data: req.body
+    });
+
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error('Cobli proxy error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to call Cobli API' });
+  }
+});
+
+// Cobli webhook
+app.post('/webhooks/cobli', (req, res) => {
+  const verified = verifyCobliSignature(req);
+
+  if (!verified) {
+    return res.status(401).json({ error: 'Invalid webhook signature' });
+  }
+
+  console.log('Cobli webhook received:', req.body);
+  res.status(200).json({ ok: true });
 });
 
 // Route to manually refresh token (for testing)
