@@ -585,10 +585,18 @@ class IntelligentAssistant {
         if (message.type === 'assistant') {
             const feedbackDiv = document.createElement('div');
             feedbackDiv.className = 'feedback-buttons';
-            feedbackDiv.innerHTML = `
-                <button class="feedback-btn positive" onclick="assistant.giveFeedback('positive')">👍 Útil</button>
-                <button class="feedback-btn negative" onclick="assistant.giveFeedback('negative')">👎 Não útil</button>
-            `;
+            const positiveButton = document.createElement('button');
+            positiveButton.className = 'feedback-btn positive';
+            positiveButton.textContent = '👍 Útil';
+            positiveButton.addEventListener('click', () => this.giveFeedback('positive'));
+
+            const negativeButton = document.createElement('button');
+            negativeButton.className = 'feedback-btn negative';
+            negativeButton.textContent = '👎 Não útil';
+            negativeButton.addEventListener('click', () => this.giveFeedback('negative'));
+
+            feedbackDiv.appendChild(positiveButton);
+            feedbackDiv.appendChild(negativeButton);
             messageDiv.appendChild(feedbackDiv);
         }
 

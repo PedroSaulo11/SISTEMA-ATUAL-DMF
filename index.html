@@ -14,13 +14,13 @@
 
 <div id="loginSection" class="login-screen">
     <div class="login-box">
-        <h2 style="margin-bottom: 20px; color: var(--primary)">DMF Empreendimentos</h2>
+        <h2 class="login-title">DMF Empreendimentos</h2>
         <div class="form-group">
             <input type="text" id="loginInput" placeholder="Usuário ou Email" class="styled-input">
             <input type="password" id="loginPass" placeholder="Senha" class="styled-input">
         </div>
-        <button onclick="system.auth.login()" class="btn btn-primary" style="width: 100%">Acessar Sistema</button>
-        <p style="font-size: 11px; color: #64748b; margin-top: 15px;">Acesso restrito a colaboradores autorizados.</p>
+        <button id="btnLogin" class="btn btn-primary btn-full">Acessar Sistema</button>
+        <p class="login-subtitle">Acesso restrito a colaboradores autorizados.</p>
     </div>
 </div>
 
@@ -28,9 +28,9 @@
     <aside class="sidebar">
         <div class="sidebar-header">
             <h3>DMF FLUXO</h3>
-            <p id="userRoleBadge" style="font-size: 10px; opacity: 0.8"></p>
+            <p id="userRoleBadge" class="user-role-badge"></p>
         </div>
-        <nav style="margin-top: 40px; flex: 1">
+        <nav class="sidebar-nav">
             <button class="btn-side active" data-nav="dashboard">Dashboard</button>
             <button class="btn-side" data-nav="payments">Fluxo de Pagamentos</button>
             <button class="btn-side" data-nav="audit">Logs de Auditoria</button>
@@ -38,7 +38,7 @@
             <button class="btn-side" data-nav="assistente">Assistente</button>
             <button class="btn-side" data-nav="cobli">Cobli</button>
         </nav>
-        <button class="btn btn-logout" onclick="system.auth.logout()">Sair</button>
+        <button id="btnLogout" class="btn btn-logout">Sair</button>
     </aside>
 
     <main class="main-content">
@@ -59,16 +59,15 @@
                 <div class="flex-header">
                     <h2>Fluxo de Pagamentos</h2>
                     <div class="actions">
-                        <button class="btn btn-danger" onclick="system.data.clearAll()">Remover Todo Fluxo</button>
-                        <button class="btn btn-ghost" onclick="system.data.export()">Exportar XLSX</button>
-                        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Importar Conta Azul</button>
-                        <button class="btn btn-success" onclick="system.data.syncFromAPI()">Sincronizar API Conta Azul</button>
-                        <button class="btn btn-primary" onclick="system.ui.openModal('addPaymentModal')">Adicionar Pagamento</button> <!-- ALTERADO -->
+                        <button id="btnClearPayments" class="btn btn-danger">Remover Todo Fluxo</button>
+                        <button id="btnExportPayments" class="btn btn-ghost">Exportar XLSX</button>
+                        <button id="btnImportPayments" class="btn btn-primary">Importar Conta Azul</button>
+                        <button id="btnAddPayment" class="btn btn-primary">Adicionar Pagamento</button> <!-- ALTERADO -->
                     </div>
                 </div>
-                <input type="file" id="fileInput" accept=".xlsx" class="hidden" onchange="system.data.import(this)">
+                <input type="file" id="fileInput" accept=".xlsx" class="hidden">
                 
-                <div class="data-table-wrapper" style="margin-top: 20px;">
+                <div class="data-table-wrapper data-table-spaced">
                     <table id="paymentsTable">
                         <thead>
                             <tr>
@@ -110,12 +109,12 @@
                 <div id="adminContent">
                     <div id="usersTab" class="admin-tab-content">
                         <h3>Usuários do Sistema</h3>
-                        <button class="btn btn-primary" onclick="system.ui.openCreateUserModal()">Criar Usuário</button>
+                        <button id="btnCreateUser" class="btn btn-primary">Criar Usuário</button>
                         <div id="userGrid"></div>
                     </div>
                     <div id="rolesTab" class="admin-tab-content hidden">
                         <h3>Cargos e Permissões</h3>
-                        <button class="btn btn-primary" onclick="system.ui.openCreateRoleModal()">Criar Novo Cargo</button>
+                        <button id="btnCreateRole" class="btn btn-primary">Criar Novo Cargo</button>
                         <div id="rolesGrid"></div>
                     </div>
                 </div>
@@ -129,7 +128,7 @@
                     <div id="chatMessages" class="chat-messages"></div>
                     <div class="chat-input-area">
                         <input type="text" id="chatInput" placeholder="Digite sua pergunta..." class="chat-input">
-                        <button onclick="assistant.sendMessage()" class="btn btn-primary chat-send-btn">Enviar</button>
+                        <button id="chatSendBtn" class="btn btn-primary chat-send-btn">Enviar</button>
                     </div>
                 </div>
             </div>
@@ -147,7 +146,7 @@
                     <div class="stat-item">Rotas sem Veículo<br><span id="rotasSemVeiculo">0</span></div>
                     <div class="stat-item">Produtividade Média Frota<br><span id="produtividadeMedia">0%</span></div>
                 </div>
-                <div id="mapContainer" style="height: 400px; margin-top: 20px;"></div>
+                <div id="mapContainer" class="map-container"></div>
             </div>
         </section>
     </main>
@@ -156,7 +155,7 @@
 <!-- Modal for Creating User -->
 <div id="createUserModal" class="modal">
     <div class="modal-content">
-        <span class="close" onclick="system.ui.closeModal('createUserModal')">&times;</span>
+        <span class="close" data-close-modal="createUserModal">&times;</span>
         <h3>Criar Novo Usuário</h3>
         <form id="createUserForm">
             <div class="form-group">
@@ -191,7 +190,7 @@
 <!-- Modal for Creating Role -->
 <div id="createRoleModal" class="modal">
     <div class="modal-content">
-        <span class="close" onclick="system.ui.closeModal('createRoleModal')">&times;</span>
+        <span class="close" data-close-modal="createRoleModal">&times;</span>
         <h3>Criar Novo Cargo</h3>
         <form id="createRoleForm">
             <div class="form-group">
@@ -215,7 +214,7 @@
 <!-- Modal for Editing User -->
 <div id="editUserModal" class="modal">
     <div class="modal-content">
-        <span class="close" onclick="system.ui.closeModal('editUserModal')">&times;</span>
+        <span class="close" data-close-modal="editUserModal">&times;</span>
         <h3>Editar Usuário</h3>
         <form id="editUserForm">
             <input type="hidden" id="editUserId" name="editUserId">
@@ -246,7 +245,7 @@
 <!-- Modal for Changing Password -->
 <div id="changePasswordModal" class="modal">
     <div class="modal-content">
-        <span class="close" onclick="system.ui.closeModal('changePasswordModal')">&times;</span>
+        <span class="close" data-close-modal="changePasswordModal">&times;</span>
         <h3>Trocar Senha</h3>
         <p>Alterando senha para: <strong id="changePasswordUserName"></strong></p>
         <form id="changePasswordForm">
@@ -267,7 +266,7 @@
 <!-- Modal: Adicionar Pagamento --> <!-- ALTERADO -->
 <div id="addPaymentModal" class="modal"> <!-- ALTERADO -->
   <div class="modal-content">
-    <span class="close" onclick="system.ui.closeModal('addPaymentModal')">&times;</span>
+    <span class="close" data-close-modal="addPaymentModal">&times;</span>
     <h3>Adicionar Pagamento</h3>
     <form id="addPaymentForm"> <!-- ALTERADO -->
       <div class="form-group">

@@ -3,12 +3,126 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const crypto = require('crypto');
+const winston = require('winston');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { withCache } = require('./cache');
+const {
+  initDb,
+  isDbReady,
+  getUserByUsernameOrEmail,
+  getUserById,
+  findUserByUsernameOrEmailExcludingId,
+  createUser,
+  updateUserById,
+  deleteUserById,
+  listUsers,
+  updateLastLogin,
+  getServiceToken,
+  upsertServiceToken,
+  insertWebhook
+} = require('./db');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
+const EXTERNAL_API_TIMEOUT_MS = Number(process.env.EXTERNAL_API_TIMEOUT_MS || 10000);
+const CONTA_AZUL_TIMEOUT_MS = Number(process.env.CONTA_AZUL_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
+const COBLI_TIMEOUT_MS = Number(process.env.COBLI_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
+
+const contaAzulClient = axios.create({ timeout: CONTA_AZUL_TIMEOUT_MS });
+const cobliClient = axios.create({ timeout: COBLI_TIMEOUT_MS });
+
+// Security: Configure Winston logger
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'dmf-system' },
+  transports: [
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' }),
+  ],
+});
+
+if (process.env.NODE_ENV !== 'production' || process.env.LOG_TO_CONSOLE === 'true') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.simple(),
+  }));
+}
+
+// Optional resource monitoring
+if (process.env.MONITOR_ENABLED === 'true') {
+  const intervalMs = Number(process.env.MONITOR_INTERVAL_MS || 60000);
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const cpu = process.cpuUsage();
+    logger.info('Resource usage', {
+      rss: mem.rss,
+      heap_used: mem.heapUsed,
+      heap_total: mem.heapTotal,
+      external: mem.external,
+      cpu_user: cpu.user,
+      cpu_system: cpu.system
+    });
+  }, intervalMs).unref();
+}
+
+// Security: Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Security: Auth rate limiting (stricter)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 5), // limit each IP to N auth attempts per windowMs
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Security: Helmet for security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net", "https://unpkg.com"],
+      styleSrcAttr: ["'unsafe-inline'"],
+      scriptSrc: ["'self'", "https://cdn.jsdelivr.net", "https://unpkg.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://cdn.jsdelivr.net", "https://unpkg.com"],
+    },
+  },
+}));
+
+// Security: Apply rate limiting
+app.use('/api/', limiter);
+app.use('/api/auth/', authLimiter);
+
+// Security: CORS configuration
+const corsOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)
+  : (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:3000', 'http://localhost:3001']);
+
+app.use(cors({
+  origin: corsOrigins.length ? corsOrigins : false,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
+}));
 
 // Middleware
-app.use(cors());
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf;
@@ -18,15 +132,19 @@ app.use(express.json({
 // Serve static files
 app.use(express.static(__dirname));
 
-// In-memory storage for tokens (in production, use a database or secure storage)
-let accessToken = process.env.CONTA_AZUL_ACCESS_TOKEN;
-let refreshToken = process.env.CONTA_AZUL_REFRESH_TOKEN;
+// Token storage (persisted in database)
+let accessToken = null;
+let refreshToken = null;
 let tokenExpiry = null; // Will be set based on JWT expiry
+const users = []; // In-memory fallback for transition
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-jwt-secret');
 
 // OAuth2 Configuration
 const CLIENT_ID = process.env.CONTA_AZUL_CLIENT_ID;
 const CLIENT_SECRET = process.env.CONTA_AZUL_CLIENT_SECRET;
 const TOKEN_URL = process.env.CONTA_AZUL_TOKEN_URL;
+const CONTA_AZUL_API_BASE_URL = process.env.CONTA_AZUL_API_BASE_URL || 'https://api.contaazul.com';
+const CONTA_AZUL_PAYMENTS_PATH = process.env.CONTA_AZUL_PAYMENTS_PATH || '/v2/payments';
 
 // Cobli Configuration
 const COBLI_API_BASE_URL = process.env.COBLI_API_BASE_URL;
@@ -99,7 +217,7 @@ async function cobliRequest(method, path, options = {}) {
   const url = `${COBLI_API_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
   const headers = buildCobliHeaders(options.headers || {});
 
-  return axios({
+  return cobliClient({
     method,
     url,
     headers,
@@ -109,19 +227,77 @@ async function cobliRequest(method, path, options = {}) {
 }
 
 // Function to decode JWT and get expiry
-function getTokenExpiry(token) {
+function decodeJwtPayload(token) {
   try {
-    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-    return payload.exp * 1000; // Convert to milliseconds
+    const base64Url = token.split('.')[1];
+    if (!base64Url) return null;
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    return JSON.parse(json);
   } catch (error) {
-    console.error('Error decoding token:', error);
     return null;
   }
 }
 
-// Initialize token expiry on startup
-if (accessToken) {
-  tokenExpiry = getTokenExpiry(accessToken);
+function getTokenExpiry(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload || typeof payload.exp !== 'number') {
+    return null;
+  }
+  return payload.exp * 1000; // Convert to milliseconds
+}
+
+function sanitizeUserForResponse(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    name: user.name || null,
+    created_at: user.created_at,
+    last_login: user.last_login
+  };
+}
+
+async function loadTokensFromDb() {
+  if (!isDbReady()) {
+    accessToken = process.env.CONTA_AZUL_ACCESS_TOKEN || null;
+    refreshToken = process.env.CONTA_AZUL_REFRESH_TOKEN || null;
+    tokenExpiry = accessToken ? getTokenExpiry(accessToken) : null;
+    return;
+  }
+
+  try {
+    const tokenRow = await getServiceToken('conta_azul');
+    if (tokenRow) {
+      accessToken = tokenRow.access_token || null;
+      refreshToken = tokenRow.refresh_token || null;
+      tokenExpiry = tokenRow.expires_at ? new Date(tokenRow.expires_at).getTime() : null;
+      if (accessToken && !tokenExpiry) {
+        tokenExpiry = getTokenExpiry(accessToken);
+      }
+    } else {
+      accessToken = process.env.CONTA_AZUL_ACCESS_TOKEN || null;
+      refreshToken = process.env.CONTA_AZUL_REFRESH_TOKEN || null;
+      tokenExpiry = accessToken ? getTokenExpiry(accessToken) : null;
+
+      if (accessToken || refreshToken) {
+        await upsertServiceToken(
+          'conta_azul',
+          accessToken,
+          refreshToken,
+          tokenExpiry ? new Date(tokenExpiry) : null
+        );
+      }
+    }
+  } catch (error) {
+    logger.warn('Token load failed, using env fallback', { error: error.message });
+    accessToken = process.env.CONTA_AZUL_ACCESS_TOKEN || null;
+    refreshToken = process.env.CONTA_AZUL_REFRESH_TOKEN || null;
+    tokenExpiry = accessToken ? getTokenExpiry(accessToken) : null;
+  }
 }
 
 // Function to refresh token
@@ -133,7 +309,7 @@ async function refreshAccessToken() {
   try {
     const authHeader = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
 
-    const response = await axios.post(TOKEN_URL, new URLSearchParams({
+    const response = await contaAzulClient.post(TOKEN_URL, new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken
     }), {
@@ -147,9 +323,18 @@ async function refreshAccessToken() {
     refreshToken = response.data.refresh_token;
     tokenExpiry = Date.now() + (response.data.expires_in * 1000);
 
-    console.log('Token refreshed successfully');
+    if (isDbReady()) {
+      await upsertServiceToken(
+        'conta_azul',
+        accessToken,
+        refreshToken,
+        tokenExpiry ? new Date(tokenExpiry) : null
+      );
+    }
+
+    logger.info('Token refreshed successfully');
   } catch (error) {
-    console.error('Error refreshing token:', error.response?.data || error.message);
+    logger.error('Error refreshing token', { error: error.response?.data || error.message });
     // Reset tokens on failure
     accessToken = null;
     refreshToken = null;
@@ -161,7 +346,19 @@ async function refreshAccessToken() {
 // Middleware to check and refresh token if needed
 async function ensureValidToken() {
   if (!accessToken || !tokenExpiry) {
-    throw new Error('No access token available. Please authenticate first.');
+    await loadTokensFromDb();
+  }
+
+  if (accessToken && !tokenExpiry) {
+    tokenExpiry = getTokenExpiry(accessToken);
+  }
+
+  if (!accessToken || !tokenExpiry) {
+    if (refreshToken) {
+      await refreshAccessToken();
+    } else {
+      throw new Error('No access token available. Please authenticate first.');
+    }
   }
 
   if (Date.now() >= tokenExpiry - 60000) { // Refresh 1 minute before expiry
@@ -169,22 +366,333 @@ async function ensureValidToken() {
   }
 }
 
-// Route to fetch payments from Conta Azul API
-app.get('/api/payments', async (req, res) => {
-  try {
-    await ensureValidToken();
+async function contaAzulRequest(config, context = {}) {
+  await ensureValidToken();
+  const requestConfig = {
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      'Authorization': `Bearer ${accessToken}`
+    }
+  };
 
-    const response = await axios.get('https://api.contaazul.com/v1/pagamentos', {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      }
+  try {
+    return await contaAzulClient(requestConfig);
+  } catch (error) {
+    const status = error.response?.status;
+    if ((status === 401 || status === 403) && refreshToken) {
+      logger.warn('Conta Azul token invalid, attempting refresh', {
+        status,
+        ...context
+      });
+      await refreshAccessToken();
+      const retryConfig = {
+        ...config,
+        headers: {
+          ...(config.headers || {}),
+          'Authorization': `Bearer ${accessToken}`
+        }
+      };
+      return contaAzulClient(retryConfig);
+    }
+    throw error;
+  }
+}
+
+function logTimeout(error, context) {
+  if (error && error.code === 'ECONNABORTED') {
+    logger.warn('External API timeout', { ...context, timeout_ms: context.timeout_ms });
+  }
+}
+
+// Security: Input validation middleware
+const { body, param, query, validationResult } = require('express-validator');
+
+// Security: Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      logger.warn('Invalid token used', { error: err.message, ip: req.ip });
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    req.user = user;
+    next();
+  });
+}
+
+// Security: Role-based authorization middleware
+function authorizeRole(requiredRole) {
+  return (req, res, next) => {
+    if (!req.user) {
+      logger.warn('Authorization check without authenticated user', { ip: req.ip });
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const roleHierarchy = { 'user': 1, 'gestor': 2, 'admin': 3 };
+    const userRoleLevel = roleHierarchy[req.user.role] || 0;
+    const requiredRoleLevel = roleHierarchy[requiredRole] || 0;
+
+    if (userRoleLevel < requiredRoleLevel) {
+      logger.warn('Insufficient permissions', {
+        user: req.user.username,
+        userRole: req.user.role,
+        requiredRole,
+        ip: req.ip,
+        path: req.path
+      });
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    next();
+  };
+}
+
+// Security: Authentication routes
+app.post('/api/auth/register', [
+  body('username').isLength({ min: 3, max: 50 }).trim().escape().withMessage('Username must be 3-50 characters'),
+  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  body('role').isIn(['user', 'gestor', 'admin']).withMessage('Invalid role'),
+  body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Registration validation failed', { errors: errors.array() });
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { username, email, password, role } = req.body;
+    const normalizedUsername = String(username || '').trim();
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    // Check if user already exists
+    let existingUser = users.find(u =>
+      String(u.username || '').toLowerCase() === normalizedUsername.toLowerCase() ||
+      String(u.email || '').toLowerCase() === normalizedEmail.toLowerCase()
+    );
+    if (!existingUser && isDbReady()) {
+      existingUser = await getUserByUsernameOrEmail(normalizedUsername) || await getUserByUsernameOrEmail(normalizedEmail);
+    }
+    if (existingUser) {
+      logger.warn('Registration attempt with existing user', { username, email });
+      return res.status(409).json({ error: 'User already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    let newUser = null;
+    if (isDbReady()) {
+      newUser = await createUser({
+        username: normalizedUsername,
+        email: normalizedEmail,
+        passwordHash: hashedPassword,
+        role: role || 'user',
+        name: req.body.name || null
+      });
+    }
+
+    const fallbackUser = {
+      id: newUser?.id || Date.now().toString(),
+      username: normalizedUsername,
+      email: normalizedEmail,
+      password_hash: hashedPassword,
+      role: role || 'user',
+      name: req.body.name || null,
+      created_at: new Date().toISOString(),
+      last_login: null
+    };
+    users.push(fallbackUser);
+
+    logger.info('User registered successfully', { username, email, role: (newUser?.role || fallbackUser.role) });
+
+    res.status(201).json({
+      message: 'User registered successfully',
+      user: sanitizeUserForResponse(newUser || fallbackUser)
+    });
+  } catch (error) {
+    logger.error('Registration error', { error: error.message });
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+app.post('/api/auth/login', [
+  body('username').notEmpty().trim().escape().withMessage('Username required'),
+  body('password').notEmpty().withMessage('Password required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Login validation failed', { errors: errors.array() });
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { username, password } = req.body;
+    const loginValue = String(username || '').trim();
+
+    let user = users.find(u =>
+      String(u.username || '').toLowerCase() === loginValue.toLowerCase() ||
+      String(u.email || '').toLowerCase() === loginValue.toLowerCase()
+    );
+    if (!user && isDbReady()) {
+      user = await getUserByUsernameOrEmail(loginValue);
+    }
+    if (!user) {
+      logger.warn('Login attempt with non-existent user', { username });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      logger.warn('Login attempt with wrong password', { username });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Update last login
+    if (isDbReady()) {
+      await updateLastLogin(user.id);
+    }
+    user.last_login = new Date().toISOString();
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user.id, username: user.username, email: user.email, role: user.role, name: user.name || null },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    logger.info('User logged in successfully', { username, role: user.role });
+
+    res.json({
+      message: 'Login successful',
+      token,
+      user: sanitizeUserForResponse(user)
+    });
+  } catch (error) {
+    logger.error('Login error', { error: error.message });
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Security: Protected route to fetch payments from Conta Azul API
+app.get('/api/payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    const response = await withCache('contaazul:payments', Number(process.env.CACHE_TTL_PAYMENTS || 60), async () => {
+      const url = `${CONTA_AZUL_API_BASE_URL.replace(/\/+$/, '')}/${CONTA_AZUL_PAYMENTS_PATH.replace(/^\/+/, '')}`;
+      const result = await contaAzulRequest({
+        method: 'GET',
+        url,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }, { route: '/api/payments', user: req.user?.username });
+      return result.data;
     });
 
-    res.json(response.data);
+    logger.info('Payments fetched successfully', { user: req.user.username, count: response?.length || 0 });
+    res.json(response);
   } catch (error) {
-    console.error('Error fetching payments:', error.response?.data || error.message);
+    logTimeout(error, { service: 'conta_azul', route: '/api/payments', timeout_ms: CONTA_AZUL_TIMEOUT_MS });
+    logger.error('Error fetching payments', {
+      error: error.message,
+      user: req.user?.username,
+      status: error.response?.status || null,
+      data: error.response?.data || null
+    });
     res.status(500).json({ error: 'Failed to fetch payments from Conta Azul API' });
+  }
+});
+
+// Security: Protected route to sign a payment (requires gestor or admin)
+app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), [
+  param('id').notEmpty().withMessage('Payment ID required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Payment sign validation failed', { errors: errors.array(), user: req.user.username });
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const paymentId = req.params.id;
+
+    const url = `${CONTA_AZUL_API_BASE_URL.replace(/\/+$/, '')}/${CONTA_AZUL_PAYMENTS_PATH.replace(/^\/+/, '')}/${paymentId}/sign`;
+    const response = await contaAzulRequest({
+      method: 'POST',
+      url,
+      data: {},
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }, { route: '/api/payments/:id/sign', paymentId, user: req.user?.username });
+
+    logger.info('Payment signed successfully', {
+      user: req.user.username,
+      paymentId,
+      status: response.status
+    });
+    res.json({ message: 'Payment signed successfully', data: response.data });
+  } catch (error) {
+    logTimeout(error, { service: 'conta_azul', route: '/api/payments/:id/sign', timeout_ms: CONTA_AZUL_TIMEOUT_MS });
+    logger.error('Error signing payment', {
+      error: error.message,
+      user: req.user?.username,
+      paymentId: req.params.id,
+      status: error.response?.status || null,
+      data: error.response?.data || null
+    });
+    res.status(500).json({ error: 'Failed to sign payment' });
+  }
+});
+
+// Security: Protected route to remove a payment flow (requires admin)
+app.delete('/api/payments/:id', authenticateToken, authorizeRole('admin'), [
+  param('id').notEmpty().withMessage('Payment ID required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Payment delete validation failed', { errors: errors.array(), user: req.user.username });
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const paymentId = req.params.id;
+
+    const url = `${CONTA_AZUL_API_BASE_URL.replace(/\/+$/, '')}/${CONTA_AZUL_PAYMENTS_PATH.replace(/^\/+/, '')}/${paymentId}`;
+    const response = await contaAzulRequest({
+      method: 'DELETE',
+      url,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }, { route: '/api/payments/:id', paymentId, user: req.user?.username });
+
+    logger.info('Payment flow removed successfully', {
+      user: req.user.username,
+      paymentId,
+      status: response.status
+    });
+    res.json({ message: 'Payment flow removed successfully' });
+  } catch (error) {
+    logTimeout(error, { service: 'conta_azul', route: '/api/payments/:id', timeout_ms: CONTA_AZUL_TIMEOUT_MS });
+    logger.error('Error removing payment flow', {
+      error: error.message,
+      user: req.user?.username,
+      paymentId: req.params.id,
+      status: error.response?.status || null,
+      data: error.response?.data || null
+    });
+    res.status(500).json({ error: 'Failed to remove payment flow' });
   }
 });
 
@@ -196,37 +704,126 @@ app.get('/api/cobli/health', (req, res) => {
   });
 });
 
-// Cobli generic proxy (use ?path=/endpoint and optional query params)
-app.all('/api/cobli/proxy', async (req, res) => {
+// Security: Protected Cobli generic proxy
+app.all('/api/cobli/proxy', authenticateToken, authorizeRole('user'), [
+  query('path').notEmpty().withMessage('Path parameter required'),
+], async (req, res) => {
   try {
-    const path = req.query.path;
-    if (!path) {
-      return res.status(400).json({ error: 'Missing required query param: path' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Cobli proxy validation failed', { errors: errors.array(), user: req.user.username });
+      return res.status(400).json({ errors: errors.array() });
     }
 
+    const path = req.query.path;
     const { path: _, ...params } = req.query;
+
     const response = await cobliRequest(req.method, path, {
       params,
       data: req.body
     });
 
+    logger.info('Cobli proxy request successful', {
+      user: req.user.username,
+      method: req.method,
+      path,
+      status: response.status
+    });
+
     res.status(response.status).json(response.data);
   } catch (error) {
-    console.error('Cobli proxy error:', error.response?.data || error.message);
+    logTimeout(error, { service: 'cobli', route: '/api/cobli/proxy', timeout_ms: COBLI_TIMEOUT_MS });
+    logger.error('Cobli proxy error', {
+      error: error.message,
+      user: req.user?.username,
+      method: req.method,
+      path: req.query.path
+    });
     res.status(500).json({ error: 'Failed to call Cobli API' });
   }
 });
 
+// Security: Protected route to fetch payments from Cobli API
+app.get('/api/cobli/payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    const response = await withCache('cobli:payments', Number(process.env.CACHE_TTL_COBLI_PAYMENTS || 60), async () => {
+      const result = await cobliRequest('GET', '/payments');
+      return result.data;
+    });
+    logger.info('Cobli payments fetched successfully', { user: req.user.username, count: response?.length || 0 });
+    res.json(response);
+  } catch (error) {
+    logTimeout(error, { service: 'cobli', route: '/api/cobli/payments', timeout_ms: COBLI_TIMEOUT_MS });
+    logger.error('Error fetching payments from Cobli API', { error: error.message, user: req.user?.username });
+    res.status(500).json({ error: 'Failed to fetch payments from Cobli API' });
+  }
+});
+
+// Route to fetch vehicle locations from Cobli API
+app.get('/api/cobli/vehicle-locations', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    const response = await withCache('cobli:vehicle_locations', Number(process.env.CACHE_TTL_COBLI_LOCATIONS || 30), async () => {
+      const result = await cobliRequest('GET', '/vehicles/locations');
+      return result.data;
+    });
+    res.json(response);
+  } catch (error) {
+    logTimeout(error, { service: 'cobli', route: '/api/cobli/vehicle-locations', timeout_ms: COBLI_TIMEOUT_MS });
+    console.error('Error fetching vehicle locations from Cobli API:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to fetch vehicle locations from Cobli API' });
+  }
+});
+
 // Cobli webhook
-app.post('/webhooks/cobli', (req, res) => {
+app.post('/webhooks/cobli', async (req, res) => {
   const verified = verifyCobliSignature(req);
 
   if (!verified) {
     return res.status(401).json({ error: 'Invalid webhook signature' });
   }
 
-  console.log('Cobli webhook received:', req.body);
-  res.status(200).json({ ok: true });
+  try {
+    await insertWebhook('cobli', req.body, req.headers);
+    console.log('Cobli webhook received:', req.body);
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    logger.error('Cobli webhook storage failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to store webhook payload' });
+  }
+});
+
+// Conta Azul webhook (signature validation optional)
+app.post('/webhooks/contaazul', async (req, res) => {
+  const secret = process.env.CONTA_AZUL_WEBHOOK_SECRET;
+  const header = process.env.CONTA_AZUL_WEBHOOK_SIGNATURE_HEADER || 'X-ContaAzul-Signature';
+
+  if (secret) {
+    const signature = req.get(header);
+    if (!signature || !req.rawBody) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(req.rawBody)
+      .digest('hex');
+
+    const normalizedSignature = signature.startsWith('sha256=')
+      ? signature.slice('sha256='.length)
+      : signature;
+
+    if (normalizedSignature !== expected) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+  }
+
+  try {
+    await insertWebhook('contaazul', req.body, req.headers);
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    logger.error('Conta Azul webhook storage failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to store webhook payload' });
+  }
 });
 
 // Route to manually refresh token (for testing)
@@ -244,12 +841,171 @@ app.post('/api/auth/refresh', async (req, res) => {
 app.get('/api/auth/status', (req, res) => {
   res.json({
     authenticated: !!accessToken,
+    token_expiry: tokenExpiry,
+    deprecated: true,
+    note: 'Use /api/auth/service-status or /api/auth/user-status'
+  });
+});
+
+// Route to check service authentication status (Conta Azul token)
+app.get('/api/auth/service-status', (req, res) => {
+  res.json({
+    authenticated: !!accessToken,
     token_expiry: tokenExpiry
   });
 });
 
+// Route to check user authentication status (JWT)
+app.get('/api/auth/user-status', authenticateToken, (req, res) => {
+  res.json({
+    authenticated: true,
+    user: sanitizeUserForResponse(req.user)
+  });
+});
+
+// Admin: list users
+app.get('/api/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    let data = users.map(sanitizeUserForResponse);
+    if (isDbReady()) {
+      const dbUsers = await listUsers();
+      data = dbUsers.map(sanitizeUserForResponse);
+    }
+    res.json({ success: true, users: data });
+  } catch (error) {
+    logger.error('Failed to list users', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to list users' });
+  }
+});
+
+// Admin: update user
+app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
+  param('id').isInt().withMessage('Valid user ID required'),
+  body('username').optional().isLength({ min: 3, max: 50 }).trim().escape(),
+  body('email').optional().isEmail().normalizeEmail(),
+  body('role').optional().isIn(['user', 'gestor', 'admin']),
+  body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
+  body('password').optional().isLength({ min: 8 })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const userId = Number(req.params.id);
+    if (req.user?.id === userId && req.body.role) {
+      return res.status(400).json({ success: false, error: 'Cannot update own role via this endpoint' });
+    }
+
+    let user = users.find(u => Number(u.id) === userId);
+    if (!user && isDbReady()) {
+      user = await getUserById(userId);
+    }
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const updates = {};
+    if (req.body.username) updates.username = String(req.body.username).trim();
+    if (req.body.email) updates.email = String(req.body.email).trim().toLowerCase();
+    if (req.body.role) updates.role = req.body.role;
+    if (req.body.name) updates.name = req.body.name;
+    if (req.body.password) {
+      updates.password_hash = await bcrypt.hash(req.body.password, 12);
+    }
+
+    if ((updates.username || updates.email) && isDbReady()) {
+      const dupe = await findUserByUsernameOrEmailExcludingId(
+        updates.username || user.username,
+        updates.email || user.email,
+        userId
+      );
+      if (dupe) {
+        return res.status(409).json({ success: false, error: 'User already exists' });
+      }
+    }
+
+    if (isDbReady()) {
+      user = await updateUserById(userId, updates);
+    } else {
+      Object.assign(user, updates);
+    }
+
+    res.json({ success: true, user: sanitizeUserForResponse(user) });
+  } catch (error) {
+    logger.error('Failed to update user', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to update user' });
+  }
+});
+
+// Admin: delete user
+app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), [
+  param('id').isInt().withMessage('Valid user ID required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const userId = Number(req.params.id);
+    if (req.user?.id === userId) {
+      return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
+    }
+
+    let user = users.find(u => Number(u.id) === userId);
+    if (!user && isDbReady()) {
+      user = await getUserById(userId);
+    }
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    if (isDbReady()) {
+      await deleteUserById(userId);
+    }
+    const index = users.findIndex(u => Number(u.id) === userId);
+    if (index >= 0) {
+      users.splice(index, 1);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Failed to delete user', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to delete user' });
+  }
+});
+
+// CSRF error handler
+app.use((err, req, res, next) => {
+  if (err && err.code === 'EBADCSRFTOKEN') {
+    return res.status(403).json({ error: 'Invalid CSRF token' });
+  }
+  return next(err);
+});
+
 // Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log('Conta Azul API integration ready');
+async function startServer() {
+  try {
+    if (process.env.NODE_ENV === 'production') {
+      if (!process.env.JWT_SECRET) {
+        throw new Error('JWT_SECRET is required in production');
+      }
+    }
+    await initDb();
+    logger.info('Database connected');
+  } catch (error) {
+    logger.warn('Database unavailable, using in-memory fallback', { error: error.message });
+  }
+  await loadTokensFromDb();
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log('Conta Azul API integration ready');
+  });
+}
+
+startServer().catch(error => {
+  logger.error('Failed to start server', { error: error.message });
+  process.exit(1);
 });

@@ -61,6 +61,16 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     font-weight: 400;
 }
 
+.user-role-badge {
+    font-size: 10px;
+    opacity: 0.8;
+}
+
+.sidebar-nav {
+    margin-top: 40px;
+    flex: 1;
+}
+
 .btn-side {
     width: 100%;
     padding: 12px 16px;
@@ -201,6 +211,7 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
 
 /* --- Tabelas de Alta Performance --- */
 .data-table-wrapper { overflow-x: auto; border-radius: 8px; border: 1px solid #e2e8f0; }
+.data-table-spaced { margin-top: 20px; }
 table { width: 100%; border-collapse: collapse; background: white; }
 th { background: #f8fafc; padding: 14px; text-align: left; font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; }
 td { padding: 14px; border-top: 1px solid #f1f5f9; font-size: 14px; }
@@ -253,6 +264,11 @@ tr:hover { background: #f8fbff; }
     color: var(--text-primary);
 }
 
+.login-title {
+    margin-bottom: 20px;
+    color: var(--primary);
+}
+
 .form-group {
     margin-bottom: 24px;
 }
@@ -286,6 +302,21 @@ tr:hover { background: #f8fbff; }
     color: var(--text-secondary);
     margin-top: 24px;
     line-height: 1.5;
+}
+
+.login-subtitle {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 15px;
+}
+
+.btn-full {
+    width: 100%;
+}
+
+.map-container {
+    height: 400px;
+    margin-top: 20px;
 }
 
 .hidden { display: none !important; }
@@ -327,6 +358,10 @@ tr:hover { background: #f8fbff; }
     background: #c82333;
 }
 
+.btn-top-spaced {
+    margin-top: 10px;
+}
+
 /* Modal Styles */
 .modal {
     display: none;
@@ -339,6 +374,10 @@ tr:hover { background: #f8fbff; }
     overflow: auto;
     background-color: rgba(0, 0, 0, 0.5);
     animation: fadeIn 0.3s ease-out;
+}
+
+.modal.is-open {
+    display: block;
 }
 
 .modal-content {

@@ -37,6 +37,23 @@ function hash(str) {
     return btoa(str);
 }
 
+function getApiBase() {
+    if (window.DMF_API_BASE) return window.DMF_API_BASE;
+    if (!window.location || !window.location.origin || window.location.origin === 'null') {
+        return 'http://localhost:3001';
+    }
+    return window.location.origin;
+}
+
+function getAuthHeaders() {
+    const token = localStorage.getItem('dmf_api_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function normalizeRole(role) {
+    return String(role || '').trim().toLowerCase();
+}
+
 class DMFSystem {
     constructor() {
         this.storageKeys = {
@@ -76,16 +93,41 @@ class DMFSystem {
 class AuthManager {
     constructor(core) { this.core = core; }
 
-    login() {
+    async login() {
         const input = document.getElementById('loginInput').value.trim().toLowerCase();
         const pass = document.getElementById('loginPass').value;
+
+        try {
+            const response = await fetch(`${getApiBase()}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: input, password: pass })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const apiRole = normalizeRole(data.user.role);
+                const apiUser = {
+                    ...data.user,
+                    cargo: apiRole,
+                    nome: data.user.name || data.user.username
+                };
+                localStorage.setItem('dmf_api_token', data.token);
+                this.setSession(apiUser);
+                return;
+            }
+            alert("Falha na autenticação.");
+            return;
+        } catch (error) {
+            console.warn('API login failed, falling back to local auth:', error.message);
+        }
 
         // Verificar usuários armazenados por usuario ou email
         const user = this.core.admin.users.find(u =>
             (u.usuario === input || u.email === input) &&
             (u.senha === hash(pass) || u.senha === pass)
         );
-        if(user) {
+        if (user) {
             this.setSession(user);
         } else {
             alert("Falha na autenticação.");
@@ -93,15 +135,17 @@ class AuthManager {
     }
 
     setSession(user) {
-        this.core.currentUser = user;
+        const normalizedCargo = normalizeRole(user.cargo || user.role);
+        this.core.currentUser = { ...user, cargo: normalizedCargo };
         localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(user));
-        window.DMF_CONTEXT.usuarioLogado = user;
+        window.DMF_CONTEXT.usuarioLogado = this.core.currentUser;
         console.log('DMF_CONTEXT after setSession:', window.DMF_CONTEXT);
         this.core.ui.setupDashboard();
     }
 
     logout() {
         localStorage.removeItem(this.core.storageKeys.SESSION);
+        localStorage.removeItem('dmf_api_token');
         this.core.currentUser = null;
         window.DMF_CONTEXT.usuarioLogado = null;
         console.log('DMF_CONTEXT after logout:', window.DMF_CONTEXT);
@@ -128,6 +172,12 @@ class DataProcessor {
     }
 
     import(input) {
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'admin') {
+            alert('Somente o cargo ADMIN pode importar o fluxo de pagamentos.');
+            input.value = '';
+            return;
+        }
         const file = input.files[0];
         if (!file) {
             console.warn('Nenhum arquivo selecionado');
@@ -198,6 +248,11 @@ class DataProcessor {
     }
 
     sign(id) { // ALTERADO
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'gestor') {
+            alert('Apenas o cargo Gestor pode assinar pagamentos.');
+            return false;
+        }
         const idx = this.records.findIndex(r => r.id === id);
         if (idx === -1) return false; // ALTERADO
         const r = this.records[idx];
@@ -239,6 +294,11 @@ class DataProcessor {
     }
     
     export() {
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'admin') {
+            alert('Somente o cargo ADMIN pode exportar o fluxo de pagamentos.');
+            return;
+        }
         // Preparar dados para exportação na ordem da tabela
         const exportData = this.records.map(p => ({
             Fornecedor: p.fornecedor,
@@ -330,7 +390,18 @@ class DataProcessor {
     }
 
     syncFromAPI() {
-        fetch('http://localhost:3001/api/payments')
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'admin') {
+            alert('Somente o cargo ADMIN pode importar/sincronizar o fluxo de pagamentos.');
+            return;
+        }
+        const apiBase = getApiBase();
+        fetch(`${apiBase}/api/payments`, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            }
+        })
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -372,12 +443,74 @@ class DataProcessor {
                 alert(`Erro ao sincronizar com a API Conta Azul: ${error.message || error}. Verifique o console para detalhes.`);
             });
     }
+
+    syncFromCobliAPI() {
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'admin') {
+            alert('Somente o cargo ADMIN pode importar/sincronizar o fluxo de pagamentos.');
+            return;
+        }
+        const apiBase = getApiBase();
+        fetch(`${apiBase}/api/cobli/payments`, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            }
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Dados recebidos da API Cobli:', data);
+
+                // Processar os dados da API Cobli e mapear para o formato do sistema DMF
+                const newPayments = data.map(item => ({
+                    id: (Date.now() + Math.random()).toString(),
+                    fornecedor: item.supplier || item.fornecedor || 'N/A',
+                    data: item.due_date || item.data || 'Pendente',
+                    descricao: item.description || item.descricao || '',
+                    valor: Math.abs(Number(item.amount || item.valor || 0)),
+                    centro: item.cost_center || item.centro || 'Geral',
+                    assinatura: null,
+                    timestamp: new Date().toISOString()
+                }));
+
+                // Adicionar novos pagamentos
+                newPayments.forEach(payment => {
+                    this.records.push(payment);
+                    this.ensureCostCenter(payment.centro);
+                });
+
+                this.save();
+                window.DMF_CONTEXT.pagamentos = this.records;
+                window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+                console.log('DMF_CONTEXT after syncFromCobliAPI:', window.DMF_CONTEXT);
+
+                this.core.ui.renderPaymentsTable();
+                this.core.audit.log('SINCRONIZAÇÃO COBLI', `Sincronizados ${newPayments.length} pagamentos da API Cobli.`);
+                alert(`Sincronização Cobli concluída! ${newPayments.length} pagamentos importados da API Cobli.`);
+            })
+            .catch(error => {
+                console.error('Erro ao sincronizar com API Cobli:', error);
+                alert(`Erro ao sincronizar com a API Cobli: ${error.message || error}. Verifique o console para detalhes.`);
+            });
+    }
 }
 
 class UIManager {
     constructor(core) { this.core = core; }
 
     navigate(viewId, activeButton = null) {
+        if (viewId === 'admin') {
+            const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+            if (role !== 'admin') {
+                alert('Acesso restrito à administração.');
+                return;
+            }
+        }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         document.getElementById(viewId).classList.remove('hidden');
         // Update active button
@@ -390,6 +523,12 @@ class UIManager {
                 console.error('Erro ao carregar Cobli:', err.message);
             });
         }
+
+        if (viewId === 'admin') {
+            this.core.admin.refreshUsersFromApi().then(() => {
+                this.renderUsersTable();
+            });
+        }
     }
 
     showLogin() {
@@ -400,9 +539,11 @@ class UIManager {
     setupDashboard() {
         document.getElementById('loginSection').classList.add('hidden');
         document.getElementById('appSection').classList.remove('hidden');
-        document.getElementById('userRoleBadge').innerText = this.core.currentUser.cargo.toUpperCase();
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (this.core.currentUser) this.core.currentUser.cargo = role;
+        document.getElementById('userRoleBadge').innerText = (role || '—').toUpperCase();
 
-        if(this.core.currentUser.cargo === 'admin') {
+        if (role === 'admin') {
             document.getElementById('adminMenu').classList.remove('hidden');
         }
 
@@ -410,6 +551,7 @@ class UIManager {
         this.updateStats();
         this.initCharts();
         this.renderAdminContent();
+        this.applyRolePermissions();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
     }
 
@@ -421,8 +563,32 @@ class UIManager {
     }
 
     renderAdminContent() {
-        this.renderUsersTable();
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role === 'admin') {
+            this.core.admin.refreshUsersFromApi().then(() => {
+                this.renderUsersTable();
+            });
+        } else {
+            this.renderUsersTable();
+        }
         this.renderRolesTable();
+    }
+
+    applyRolePermissions() {
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        const isAdmin = role === 'admin';
+        const adminMenu = document.getElementById('adminMenu');
+        if (adminMenu) {
+            adminMenu.classList.toggle('hidden', !isAdmin);
+        }
+
+        const importBtn = document.getElementById('btnImportPayments');
+        const exportBtn = document.getElementById('btnExportPayments');
+        [importBtn, exportBtn].forEach(btn => {
+            if (!btn) return;
+            btn.classList.toggle('hidden', !isAdmin);
+            btn.disabled = !isAdmin;
+        });
     }
 
     renderUsersTable() {
@@ -441,15 +607,32 @@ class UIManager {
                             <td>${u.email}</td>
                             <td>${u.cargo}</td>
                             <td>
-                                <button onclick="system.ui.editUser(${u.id})" class="btn btn-ghost">Editar</button>
-                                <button onclick="system.ui.changePassword(${u.id})" class="btn btn-ghost">Trocar Senha</button>
-                                <button onclick="system.admin.deleteUser(${u.id}); system.ui.renderUsersTable()" class="btn btn-danger">Excluir</button>
+                                <button class="btn btn-ghost" data-user-action="edit" data-user-id="${u.id}">Editar</button>
+                                <button class="btn btn-ghost" data-user-action="change-password" data-user-id="${u.id}">Trocar Senha</button>
+                                <button class="btn btn-danger" data-user-action="delete" data-user-id="${u.id}">Excluir</button>
                             </td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
         `;
+        if (!body.dataset.boundUsers) {
+            body.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-user-action]');
+                if (!button) return;
+                const action = button.getAttribute('data-user-action');
+                const id = Number(button.getAttribute('data-user-id'));
+                if (!id) return;
+                if (action === 'edit') {
+                    this.editUser(id);
+                } else if (action === 'change-password') {
+                    this.changePassword(id);
+                } else if (action === 'delete') {
+                    this.core.admin.deleteUser(id);
+                }
+            });
+            body.dataset.boundUsers = 'true';
+        }
     }
 
     renderRolesTable() {
@@ -466,21 +649,38 @@ class UIManager {
                             <td>${r.name}</td>
                             <td>${r.permissions.join(', ')}</td>
                             <td>
-                                <button onclick="system.ui.editRole(${r.id})" class="btn btn-ghost">Editar</button>
-                                <button onclick="system.admin.deleteRole(${r.id}); system.ui.renderRolesTable()" class="btn btn-danger">Excluir</button>
+                                <button class="btn btn-ghost" data-role-action="edit" data-role-id="${r.id}">Editar</button>
+                                <button class="btn btn-danger" data-role-action="delete" data-role-id="${r.id}">Excluir</button>
                             </td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
-            <button onclick="system.ui.openCreateRoleModal()" class="btn btn-primary" style="margin-top: 10px">Criar Novo Cargo</button>
+            <button class="btn btn-primary btn-top-spaced" data-role-action="create">Criar Novo Cargo</button>
         `;
+        if (!body.dataset.boundRoles) {
+            body.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-role-action]');
+                if (!button) return;
+                const action = button.getAttribute('data-role-action');
+                const id = Number(button.getAttribute('data-role-id'));
+                if (action === 'edit' && id) {
+                    this.editRole(id);
+                } else if (action === 'delete' && id) {
+                    this.core.admin.deleteRole(id);
+                    this.renderRolesTable();
+                } else if (action === 'create') {
+                    this.openCreateRoleModal();
+                }
+            });
+            body.dataset.boundRoles = 'true';
+        }
     }
 
     openCreateUserModal() {
         const modal = document.getElementById('createUserModal');
         if (modal) {
-            modal.style.display = 'block';
+            modal.classList.add('is-open');
             // Populate role select
             const roleSelect = document.getElementById('userRole');
             roleSelect.innerHTML = '<option value="">Selecione um cargo</option>';
@@ -496,21 +696,21 @@ class UIManager {
     openCreateRoleModal() {
         const modal = document.getElementById('createRoleModal');
         if (modal) {
-            modal.style.display = 'block';
+            modal.classList.add('is-open');
         }
     }
 
     closeModal(modalId) {
         const modal = document.getElementById(modalId);
         if (modal) {
-            modal.style.display = 'none';
+            modal.classList.remove('is-open');
         }
     }
 
     openModal(modalId) {
         const modal = document.getElementById(modalId);
         if (modal) {
-            modal.style.display = 'block';
+            modal.classList.add('is-open');
             if(modalId === 'addPaymentModal'){ this.populateCostCentersDatalist(); } // ALTERADO
         }
     }
@@ -558,7 +758,7 @@ class UIManager {
         this.openModal('changePasswordModal');
     }
 
-    editUserFromModal() {
+    async editUserFromModal() {
         const form = document.getElementById('editUserForm');
         const formData = new FormData(form);
         const id = parseInt(formData.get('editUserId'));
@@ -568,7 +768,7 @@ class UIManager {
         const cargo = formData.get('editUserRole');
 
         if (nome && usuario && email && cargo) {
-            this.core.admin.updateUser(id, { nome, usuario, email, cargo });
+            await this.core.admin.updateUser(id, { nome, usuario, email, cargo });
             this.closeModal('editUserModal');
             this.renderUsersTable();
             form.reset();
@@ -577,7 +777,7 @@ class UIManager {
         }
     }
 
-    changePasswordFromModal() {
+    async changePasswordFromModal() {
         const form = document.getElementById('changePasswordForm');
         const formData = new FormData(form);
         const id = parseInt(formData.get('changePasswordUserId'));
@@ -592,7 +792,7 @@ class UIManager {
             alert('As senhas não coincidem.');
             return;
         }
-        this.core.admin.updateUser(id, { senha: hash(newPassword) });
+        await this.core.admin.updateUser(id, { senha: newPassword });
         this.closeModal('changePasswordModal');
         this.renderUsersTable();
         form.reset();
@@ -619,10 +819,11 @@ class UIManager {
                 ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')} (ID: ${p.assinatura.hash})` // ALTERADO
                 : '-'; // ALTERADO
 
-            const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments'); // ALTERADO
+            const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+            const canSign = role === 'gestor';
             const acoesHtml = p.assinatura
                 ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
-                : (canSign ? `<button class="btn btn-primary" onclick="system.data.sign('${p.id}')">Assinar</button>` : '—'); // ALTERADO
+                : (canSign ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
 
             return `
                 <tr>
@@ -639,6 +840,19 @@ class UIManager {
         }).join('');
 
         this.updateStats && this.updateStats(); // manter comportamento existente // ALTERADO
+
+        if (!body.dataset.boundPayments) {
+            body.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-payment-action]');
+                if (!button) return;
+                const action = button.getAttribute('data-payment-action');
+                const id = button.getAttribute('data-payment-id');
+                if (action === 'sign' && id) {
+                    this.core?.data?.sign?.(id);
+                }
+            });
+            body.dataset.boundPayments = 'true';
+        }
     }
 
     updateStats() {
@@ -791,14 +1005,125 @@ class AdminManager {
         // Load roles from localStorage with fallback
         this.roles = JSON.parse(localStorage.getItem(core.storageKeys.ROLES)) || [
             { id: 1, name: 'admin', permissions: ['all'] },
-            { id: 2, name: 'gestor', permissions: ['sign_payments'] }
+            { id: 2, name: 'gestor', permissions: ['sign_payments'] },
+            { id: 3, name: 'user', permissions: [] }
         ];
+
+        // Ensure baseline roles exist (useful on new domains like GCloud)
+        const ensureRole = (name, permissions) => {
+            const existing = this.roles.find(r => r.name === name);
+            if (!existing) {
+                this.roles.push({ id: Date.now() + Math.random(), name, permissions });
+                return;
+            }
+            // Merge permissions if role exists but is missing required ones
+            const merged = Array.from(new Set([...(existing.permissions || []), ...(permissions || [])]));
+            existing.permissions = merged;
+        };
+        ensureRole('admin', ['all']);
+        ensureRole('gestor', ['sign_payments']);
+        ensureRole('user', []);
         this.saveUsers();
         this.saveRoles();
         window.DMF_CONTEXT.usuarios = this.users;
         window.DMF_BRAIN.usuarios = this.users;
         console.log('DMF_CONTEXT after AdminManager init:', window.DMF_CONTEXT);
         console.log('DMF_BRAIN after AdminManager init:', window.DMF_BRAIN);
+    }
+
+    normalizeEmail(email) {
+        return String(email || '').trim().toLowerCase();
+    }
+
+    normalizeUsername(username) {
+        return String(username || '').trim();
+    }
+
+    isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
+    }
+
+    isValidRole(role) {
+        return this.roles.some(r => r.name === role);
+    }
+
+    validateUserInput({ nome, usuario, email, senha, cargo }, { allowPartial = false } = {}) {
+        const errors = [];
+
+        if (!allowPartial || nome !== undefined) {
+            if (!String(nome || '').trim() || String(nome || '').trim().length < 2) {
+                errors.push('Nome deve ter pelo menos 2 caracteres.');
+            }
+        }
+
+        if (!allowPartial || usuario !== undefined) {
+            const u = String(usuario || '').trim();
+            if (!u || u.length < 3 || u.length > 50) {
+                errors.push('Usuário deve ter entre 3 e 50 caracteres.');
+            }
+        }
+
+        if (!allowPartial || email !== undefined) {
+            if (!this.isValidEmail(email)) {
+                errors.push('Email inválido.');
+            }
+        }
+
+        if (!allowPartial || senha !== undefined) {
+            if (!String(senha || '').trim() || String(senha || '').trim().length < 8) {
+                errors.push('Senha deve ter no mínimo 8 caracteres.');
+            }
+        }
+
+        if (!allowPartial || cargo !== undefined) {
+            if (!cargo || !this.isValidRole(cargo)) {
+                errors.push('Cargo inválido.');
+            }
+        }
+
+        return errors;
+    }
+
+    async refreshUsersFromApi() {
+        if (!getAuthHeaders().Authorization) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/users`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                console.warn('API list users failed:', response.status);
+                return false;
+            }
+            const data = await response.json();
+            const users = (data.users || []).map(u => ({
+                id: u.id,
+                nome: u.name || u.username,
+                usuario: u.username,
+                email: u.email,
+                cargo: normalizeRole(u.role),
+                senha: null
+            }));
+            this.users = users;
+            this.saveUsers();
+            window.DMF_CONTEXT.usuarios = this.users;
+            window.DMF_BRAIN.usuarios = this.users;
+            return true;
+        } catch (error) {
+            console.warn('API list users unavailable:', error.message);
+            return false;
+        }
+    }
+
+    requireAdmin() {
+        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
+        if (role !== 'admin') {
+            alert('Somente o cargo ADMIN pode gerenciar usuários e cargos.');
+            return false;
+        }
+        return true;
     }
 
     saveUsers() {
@@ -809,26 +1134,68 @@ class AdminManager {
         localStorage.setItem(this.core.storageKeys.ROLES, JSON.stringify(this.roles));
     }
 
-    createUser(nome, email, senha, cargo, usuario = null) {
+    async createUser(nome, email, senha, cargo, usuario = null) {
+        if (!this.requireAdmin()) return;
         // Validate required fields
         if (!nome || !email || !senha || !cargo) {
             alert('Todos os campos são obrigatórios.');
             return;
         }
+        const normalizedEmail = this.normalizeEmail(email);
+        const normalizedUsername = this.normalizeUsername(usuario || normalizedEmail);
+        const errors = this.validateUserInput({
+            nome,
+            usuario: normalizedUsername,
+            email: normalizedEmail,
+            senha,
+            cargo
+        });
+        if (errors.length) {
+            alert(errors.join('\n'));
+            return;
+        }
         // Check for duplicate usuario or email
-        if (this.users.some(u => u.usuario === usuario)) {
+        if (this.users.some(u => this.normalizeUsername(u.usuario) === normalizedUsername)) {
             alert('Usuário já existe.');
             return;
         }
-        if (this.users.some(u => u.email === email.trim().toLowerCase())) {
+        if (this.users.some(u => this.normalizeEmail(u.email) === normalizedEmail)) {
             alert('Email já existe.');
             return;
         }
+        let apiUser = null;
+
+        try {
+            const response = await fetch(`${getApiBase()}/api/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: normalizedUsername,
+                    email: normalizedEmail,
+                    password: senha,
+                    role: cargo,
+                    name: nome
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                apiUser = data.user;
+            } else if (response.status === 409) {
+                alert('Usuário já existe.');
+                return;
+            } else {
+                console.warn('API register failed:', response.status);
+            }
+        } catch (error) {
+            console.warn('API register unavailable, storing locally:', error.message);
+        }
+
         const newUser = {
-            id: Date.now(),
+            id: apiUser?.id || Date.now(),
             nome,
-            usuario: usuario || email.trim().toLowerCase(),
-            email: email.trim().toLowerCase(),
+            usuario: apiUser?.username || normalizedUsername,
+            email: apiUser?.email || normalizedEmail,
             senha: hash(senha),
             cargo
         };
@@ -841,37 +1208,123 @@ class AdminManager {
         return newUser;
     }
 
-    updateUser(id, updates) {
+    async updateUser(id, updates) {
+        if (!this.requireAdmin()) return;
         const user = this.users.find(u => u.id === id);
-        if (user) {
-            // Check for duplicate usuario or email if changing
-            if (updates.usuario && updates.usuario !== user.usuario && this.users.some(u => u.usuario === updates.usuario)) {
+        if (!user) return;
+        const normalizedUpdates = { ...updates };
+        if (normalizedUpdates.email) normalizedUpdates.email = this.normalizeEmail(normalizedUpdates.email);
+        if (normalizedUpdates.usuario) normalizedUpdates.usuario = this.normalizeUsername(normalizedUpdates.usuario);
+
+        const errors = this.validateUserInput({
+            nome: normalizedUpdates.nome,
+            usuario: normalizedUpdates.usuario,
+            email: normalizedUpdates.email,
+            senha: normalizedUpdates.senha,
+            cargo: normalizedUpdates.cargo
+        }, { allowPartial: true });
+        if (errors.length) {
+            alert(errors.join('\n'));
+            return;
+        }
+
+        // Check for duplicate usuario or email if changing (local cache)
+        if (normalizedUpdates.usuario && normalizedUpdates.usuario !== user.usuario &&
+            this.users.some(u => this.normalizeUsername(u.usuario) === normalizedUpdates.usuario)) {
+            alert('Usuário já existe.');
+            return;
+        }
+        if (normalizedUpdates.email && normalizedUpdates.email !== user.email &&
+            this.users.some(u => this.normalizeEmail(u.email) === normalizedUpdates.email)) {
+            alert('Email já existe.');
+            return;
+        }
+
+        let apiUpdated = null;
+        try {
+            const payload = {};
+            if (normalizedUpdates.usuario) payload.username = normalizedUpdates.usuario;
+            if (normalizedUpdates.email) payload.email = normalizedUpdates.email;
+            if (normalizedUpdates.cargo) payload.role = normalizedUpdates.cargo;
+            if (normalizedUpdates.nome) payload.name = normalizedUpdates.nome;
+            if (normalizedUpdates.senha) payload.password = normalizedUpdates.senha;
+
+            const response = await fetch(`${getApiBase()}/api/users/${id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                apiUpdated = data.user || null;
+            } else if (response.status === 409) {
                 alert('Usuário já existe.');
                 return;
+            } else {
+                console.warn('API update failed:', response.status);
             }
-            if (updates.email && updates.email !== user.email && this.users.some(u => u.email === updates.email)) {
-                alert('Email já existe.');
-                return;
-            }
-            Object.assign(user, updates);
-            this.saveUsers();
-            this.core.audit.log('ATUALIZAÇÃO USUÁRIO', `Usuário ${user.nome} atualizado.`);
-            alert('Usuário atualizado com sucesso.');
+        } catch (error) {
+            console.warn('API update unavailable, updating locally:', error.message);
         }
+
+        Object.assign(user, {
+            ...normalizedUpdates,
+            usuario: apiUpdated?.username || normalizedUpdates.usuario || user.usuario,
+            email: apiUpdated?.email || normalizedUpdates.email || user.email,
+            cargo: apiUpdated?.role || normalizedUpdates.cargo || user.cargo,
+            nome: apiUpdated?.name || normalizedUpdates.nome || user.nome,
+            senha: normalizedUpdates.senha ? hash(normalizedUpdates.senha) : user.senha
+        });
+
+        this.saveUsers();
+        this.core.audit.log('ATUALIZAÇÃO USUÁRIO', `Usuário ${user.nome} atualizado.`);
+        alert('Usuário atualizado com sucesso.');
     }
 
-    deleteUser(id) {
+    async deleteUser(id) {
+        if (!this.requireAdmin()) return;
         if (this.core.currentUser && this.core.currentUser.id === id) {
             alert('Não é permitido excluir o próprio usuário logado.');
             return;
         }
-        this.users = this.users.filter(u => u.id !== id);
-        this.saveUsers();
-        this.core.audit.log('EXCLUSÃO USUÁRIO', `Usuário ID ${id} excluído.`);
-        alert('Usuário excluído com sucesso.');
+        let apiOk = false;
+        let apiFailed = false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/users/${id}`, {
+                method: 'DELETE',
+                headers: {
+                    ...getAuthHeaders()
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                apiOk = !!data.success;
+            } else {
+                console.warn('API delete failed:', response.status);
+                apiFailed = true;
+            }
+        } catch (error) {
+            console.warn('API delete unavailable, deleting locally:', error.message);
+            apiFailed = true;
+        }
+
+        if (apiOk || apiFailed || !getAuthHeaders().Authorization) {
+            this.users = this.users.filter(u => u.id !== id);
+            this.saveUsers();
+            this.core.audit.log('EXCLUSÃO USUÁRIO', `Usuário ID ${id} excluído.`);
+            this.core.ui.renderUsersTable();
+            alert('Usuário excluído com sucesso.');
+        } else {
+            alert('Erro ao excluir usuário.');
+        }
     }
 
     createRole() {
+        if (!this.requireAdmin()) return;
         const name = prompt('Nome do cargo:');
         const permissions = prompt('Permissões (separadas por vírgula):');
         if(name && permissions) {
@@ -889,6 +1342,7 @@ class AdminManager {
     }
 
     createUserFromModal() {
+        if (!this.requireAdmin()) return;
         const form = document.getElementById('createUserForm');
         const formData = new FormData(form);
         const nome = formData.get('userName').trim();
@@ -908,6 +1362,7 @@ class AdminManager {
     }
 
     createRoleFromModal() {
+        if (!this.requireAdmin()) return;
         const form = document.getElementById('createRoleForm');
         const formData = new FormData(form);
         const name = formData.get('roleName')?.trim();
@@ -940,6 +1395,7 @@ class AdminManager {
     }
 
     updateRole(id, updates) {
+        if (!this.requireAdmin()) return;
         const role = this.roles.find(r => r.id === id);
         if (role) {
             Object.assign(role, updates);
@@ -949,6 +1405,7 @@ class AdminManager {
     }
 
     deleteRole(id) {
+        if (!this.requireAdmin()) return;
         this.roles = this.roles.filter(r => r.id !== id);
         this.saveRoles();
         this.core.audit.log('EXCLUSÃO CARGO', `Cargo ID ${id} excluído.`);
@@ -986,7 +1443,7 @@ class CobliManager {
             throw new Error('Cobli path not configured');
         }
 
-        const apiBase = window.DMF_API_BASE || 'http://localhost:3001';
+        const apiBase = getApiBase();
         const url = new URL('/api/cobli/proxy', apiBase);
         url.searchParams.set('path', path);
         Object.entries(params).forEach(([key, value]) => {
@@ -996,7 +1453,10 @@ class CobliManager {
         });
 
         const response = await fetch(url.toString(), {
-            headers: { 'Content-Type': 'application/json' }
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            }
         });
 
         if (!response.ok) {
@@ -1259,21 +1719,47 @@ document.addEventListener('DOMContentLoaded', function() {
     // Close modal when clicking outside
     window.addEventListener('click', function(event) {
         if (event.target.classList.contains('modal')) {
-            event.target.style.display = 'none';
+            event.target.classList.remove('is-open');
         }
     });
 
-    // Import button listener
-    const importBtn = document.querySelector('button[onclick*="fileInput"]');
-    const fileInput = document.getElementById('fileInput');
+    const loginButton = document.getElementById('btnLogin');
+    if (loginButton) {
+        loginButton.addEventListener('click', function () {
+            system?.auth?.login?.();
+        });
+    }
 
-    if (importBtn && fileInput) {
-        importBtn.addEventListener('click', function() {
+    const logoutButton = document.getElementById('btnLogout');
+    if (logoutButton) {
+        logoutButton.addEventListener('click', function () {
+            window.dmfLogout?.();
+        });
+    }
+
+    const clearPaymentsButton = document.getElementById('btnClearPayments');
+    if (clearPaymentsButton) {
+        clearPaymentsButton.addEventListener('click', function () {
+            system?.data?.clearAll?.();
+        });
+    }
+
+    const exportPaymentsButton = document.getElementById('btnExportPayments');
+    if (exportPaymentsButton) {
+        exportPaymentsButton.addEventListener('click', function () {
+            system?.data?.export?.();
+        });
+    }
+
+    const importPaymentsButton = document.getElementById('btnImportPayments');
+    const fileInput = document.getElementById('fileInput');
+    if (importPaymentsButton && fileInput) {
+        importPaymentsButton.addEventListener('click', function () {
             console.log('Botão Importar clicado');
             fileInput.click();
         });
 
-        fileInput.addEventListener('change', function(event) {
+        fileInput.addEventListener('change', function (event) {
             console.log('Arquivo selecionado:', event.target.files[0]);
             if (system && system.data) {
                 system.data.import(event.target);
@@ -1282,6 +1768,43 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+
+    const addPaymentButton = document.getElementById('btnAddPayment');
+    if (addPaymentButton) {
+        addPaymentButton.addEventListener('click', function () {
+            system?.ui?.openModal?.('addPaymentModal');
+        });
+    }
+
+    const createUserButton = document.getElementById('btnCreateUser');
+    if (createUserButton) {
+        createUserButton.addEventListener('click', function () {
+            system?.ui?.openCreateUserModal?.();
+        });
+    }
+
+    const createRoleButton = document.getElementById('btnCreateRole');
+    if (createRoleButton) {
+        createRoleButton.addEventListener('click', function () {
+            system?.ui?.openCreateRoleModal?.();
+        });
+    }
+
+    const chatSendButton = document.getElementById('chatSendBtn');
+    if (chatSendButton) {
+        chatSendButton.addEventListener('click', function () {
+            window.assistant?.sendMessage?.();
+        });
+    }
+
+    document.querySelectorAll('[data-close-modal]').forEach(button => {
+        button.addEventListener('click', function () {
+            const modalId = this.getAttribute('data-close-modal');
+            if (modalId) {
+                system?.ui?.closeModal?.(modalId);
+            }
+        });
+    });
 
     // Navigation event listeners
     document.querySelectorAll('[data-nav]').forEach(button => {
@@ -1347,6 +1870,24 @@ function testDMFContextUpdates() {
 
 const system = new DMFSystem();
 window.system = system;
+
+// Hard logout for production: clear session and force UI reset
+window.dmfLogout = function dmfLogout() {
+    try {
+        system?.auth?.logout?.();
+    } catch (e) {
+        console.warn('Logout failed, falling back to storage clear', e);
+    }
+    try {
+        localStorage.removeItem('dmf_active_session');
+        localStorage.removeItem('dmf_api_token');
+    } catch (e) {
+        console.warn('Failed to clear local storage', e);
+    }
+    if (window.location && typeof window.location.reload === 'function') {
+        window.location.reload();
+    }
+};
 
 // Run test after system init
 if (window.DMF_DEBUG) setTimeout(testDMFContextUpdates, 1000);
