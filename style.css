@@ -197,6 +197,24 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     box-shadow: 0 4px 16px rgba(0, 82, 204, 0.4);
 }
 
+#btnAddPayment {
+    transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+#btnAddPayment:hover {
+    background: #0056b3;
+    transform: translateY(-2px) scale(1.05);
+}
+
+.login-screen .btn-primary {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-screen .btn-primary:hover {
+    background: var(--primary-dark);
+    transform: translateY(-2px) scale(1.05);
+}
+
 .btn-ghost {
     background: rgba(113, 128, 150, 0.1);
     color: var(--text-secondary);
@@ -217,6 +235,54 @@ th { background: #f8fafc; padding: 14px; text-align: left; font-size: 12px; font
 td { padding: 14px; border-top: 1px solid #f1f5f9; font-size: 14px; }
 tr:hover { background: #f8fbff; }
 
+.company-totals {
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    background: #f7fbff;
+    box-shadow: 0 4px 12px rgba(0, 82, 204, 0.08);
+}
+
+.company-totals-header {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.company-totals-body {
+    display: grid;
+    gap: 8px;
+}
+
+.company-total-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #ffffff;
+    border: 1px solid #e6eef9;
+}
+
+.company-total-row strong {
+    color: var(--primary-dark);
+}
+
+.company-total-empty {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+#paymentsTable tbody tr:hover td {
+    background: #e8f2ff;
+    color: #ffffff;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
 /* --- Badges de Status --- */
 .badge { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .badge-pending { background: #fffbeb; color: #92400e; }
@@ -229,8 +295,15 @@ tr:hover { background: #f8fbff; }
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 50%, var(--primary-dark) 100%);
+    background-size: 200% 200%;
     position: relative;
+    opacity: 0;
+    animation-name: loginScreenFade, loginGradientMove;
+    animation-duration: 0.7s, 12s;
+    animation-timing-function: ease-out, ease-in-out;
+    animation-iteration-count: 1, infinite;
+    animation-fill-mode: forwards, none;
 }
 
 .login-screen::before {
@@ -244,6 +317,22 @@ tr:hover { background: #f8fbff; }
     opacity: 0.1;
 }
 
+.login-screen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(120% 80% at 10% 15%, rgba(76, 154, 255, 0.35) 0%, rgba(76, 154, 255, 0) 60%),
+        radial-gradient(120% 80% at 90% 20%, rgba(0, 82, 204, 0.32) 0%, rgba(0, 82, 204, 0) 60%),
+        radial-gradient(120% 80% at 50% 85%, rgba(0, 212, 170, 0.25) 0%, rgba(0, 212, 170, 0) 60%);
+    opacity: 0.9;
+    animation-name: loginWavesMove;
+    animation-duration: 10s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    pointer-events: none;
+}
+
 .login-box {
     background: var(--bg-card);
     padding: 48px;
@@ -254,6 +343,13 @@ tr:hover { background: #f8fbff; }
     backdrop-filter: blur(10px);
     position: relative;
     z-index: 1;
+    opacity: 0;
+    transform: translateY(24px);
+    animation-name: loginPanelUp;
+    animation-duration: 0.7s;
+    animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+    animation-delay: 0.15s;
+    animation-fill-mode: forwards;
 }
 
 .login-box h2 {
@@ -262,6 +358,13 @@ tr:hover { background: #f8fbff; }
     font-size: 24px;
     font-weight: 600;
     color: var(--text-primary);
+    opacity: 0;
+    transform: translateY(10px);
+    animation-name: loginTitleUp;
+    animation-duration: 0.6s;
+    animation-timing-function: ease-out;
+    animation-delay: 0.35s;
+    animation-fill-mode: forwards;
 }
 
 .login-title {
@@ -284,6 +387,17 @@ tr:hover { background: #f8fbff; }
     background: var(--bg-card);
     transition: var(--transition);
     margin-bottom: 16px;
+    opacity: 0;
+    transform: translateY(8px);
+    animation-name: loginInputFade;
+    animation-duration: 0.5s;
+    animation-timing-function: ease-out;
+    animation-delay: 0.45s;
+    animation-fill-mode: forwards;
+}
+
+.styled-input:nth-of-type(2) {
+    animation-delay: 0.55s;
 }
 
 .styled-input:focus {
@@ -321,6 +435,57 @@ tr:hover { background: #f8fbff; }
 
 .hidden { display: none !important; }
 
+@keyframes loginScreenFade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes loginGradientMove {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+@keyframes loginWavesMove {
+    0% {
+        background-position: 0% 0%, 100% 0%, 50% 100%;
+        transform: translateY(0);
+    }
+    50% {
+        background-position: 20% 10%, 80% 15%, 50% 90%;
+        transform: translateY(-8px);
+    }
+    100% {
+        background-position: 0% 0%, 100% 0%, 50% 100%;
+        transform: translateY(0);
+    }
+}
+
+@keyframes loginPanelUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes loginTitleUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes loginInputFade {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes addPaymentSlideUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes addPaymentFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
 /* Admin Tabs */
 .admin-tabs {
     display: flex;
@@ -349,6 +514,64 @@ tr:hover { background: #f8fbff; }
     display: block;
 }
 
+.payments-tab-content {
+    display: none;
+}
+
+.payments-tab-content:not(.hidden) {
+    display: block;
+}
+
+.flow-archives-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 16px;
+}
+
+.flow-archive-item {
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 51, 102, 0.15);
+    background: #f7f9fc;
+    color: #1f2a44;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s ease;
+}
+
+.flow-archive-item:hover {
+    transform: translateY(-1px);
+    background: #e9f0ff;
+    border-color: rgba(0, 51, 102, 0.3);
+}
+
+.flow-archive-item.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+
+.flow-archive-detail {
+    background: #fff;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    border-radius: 12px;
+    padding: 14px;
+    box-shadow: 0 8px 20px rgba(0, 42, 84, 0.08);
+}
+
+.flow-archive-detail .data-table-wrapper {
+    margin-top: 10px;
+}
+
+.flow-archive-empty {
+    padding: 12px;
+    border-radius: 10px;
+    background: #f4f6fb;
+    color: #4a5568;
+    font-size: 0.95rem;
+}
+
 .btn-danger {
     background: #dc3545;
     color: white;
@@ -360,6 +583,41 @@ tr:hover { background: #f8fbff; }
 
 .btn-top-spaced {
     margin-top: 10px;
+}
+
+.flow-sync-status {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    background: #f3f6fb;
+    color: #234;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    box-shadow: 0 4px 14px rgba(0, 42, 84, 0.08);
+}
+
+.flow-sync-status.is-ok {
+    background: #e8f6ee;
+    color: #166534;
+    border-color: rgba(22, 101, 52, 0.25);
+}
+
+.flow-sync-status.is-warn {
+    background: #fff6e6;
+    color: #92400e;
+    border-color: rgba(146, 64, 14, 0.25);
+}
+
+.flow-sync-status.is-error {
+    background: #fde8e8;
+    color: #991b1b;
+    border-color: rgba(153, 27, 27, 0.25);
+}
+
+.flow-sync-status.is-info {
+    background: #eaf1ff;
+    color: #1e3a8a;
+    border-color: rgba(30, 58, 138, 0.25);
 }
 
 /* Modal Styles */
@@ -390,6 +648,15 @@ tr:hover { background: #f8fbff; }
     border-radius: 8px;
     animation: slideIn 0.3s ease-out;
     position: relative;
+}
+
+#addPaymentModal.is-open .modal-content {
+    animation: addPaymentSlideUp 0.35s ease-out;
+}
+
+#addPaymentModal.is-open .form-group input,
+#addPaymentModal.is-open .form-group select {
+    animation: addPaymentFadeIn 0.35s ease-out;
 }
 
 .close {
@@ -435,6 +702,13 @@ tr:hover { background: #f8fbff; }
     font-size: 14px;
 }
 
+#addPaymentModal .form-group input:focus,
+#addPaymentModal .form-group select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(0, 82, 204, 0.12);
+}
+
 .permissions {
     display: flex;
     flex-direction: column;
@@ -449,4 +723,35 @@ tr:hover { background: #f8fbff; }
 
 .permissions input[type="checkbox"] {
     margin-right: 10px;
+}
+
+.audit-tabs {
+    margin-bottom: 16px;
+}
+
+.audit-tab-content {
+    display: none;
+}
+
+.audit-tab-content:not(.hidden) {
+    display: block;
+}
+
+.signature-search-result {
+    margin-top: 12px;
+}
+
+.signature-search-card {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #f8fafc;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    display: grid;
+    gap: 6px;
+}
+
+.signature-search-empty {
+    color: var(--text-secondary);
+    font-size: 13px;
 }

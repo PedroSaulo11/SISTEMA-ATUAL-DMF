@@ -54,6 +54,20 @@ function normalizeRole(role) {
     return String(role || '').trim().toLowerCase();
 }
 
+function setFlowSyncStatus(message, tone = 'info') {
+    const el = document.getElementById('flowSyncStatus');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+    const toneClass = `is-${tone}`;
+    el.classList.add(toneClass);
+}
+
+function formatTimeNow() {
+    const now = new Date();
+    return now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
 class DMFSystem {
     constructor() {
         this.storageKeys = {
@@ -157,6 +171,7 @@ class DataProcessor {
     constructor(core) {
         this.core = core;
         this.records = JSON.parse(localStorage.getItem(core.storageKeys.PAYMENTS)) || [];
+        this.archives = [];
         // === Centros de Custo: carga e união com o fluxo === // ALTERADO
         const persisted = JSON.parse(localStorage.getItem(core.storageKeys.COST_CENTERS) || '[]'); // ALTERADO
         const fromRecords = Array.from(new Set((this.records || []).map(r => (r.centro || '').trim()).filter(Boolean))); // ALTERADO
@@ -165,16 +180,145 @@ class DataProcessor {
         window.DMF_CONTEXT.centrosCusto = this.costCenters; // ALTERADO
         window.DMF_CONTEXT.pagamentos = this.records;
         window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+        if (window.DMF_CONTEXT) {
+            window.DMF_CONTEXT.archives = this.archives;
+        }
         window.DMF_BRAIN.pagamentos = this.records;
         window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
         console.log('DMF_CONTEXT after DataProcessor init:', window.DMF_CONTEXT);
         console.log('DMF_BRAIN after DataProcessor init:', window.DMF_BRAIN);
     }
 
+    async loadFromBackend() {
+        setFlowSyncStatus('Sincronizando com o servidor...', 'info');
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    console.warn('Flow payments fetch unauthorized');
+                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                }
+                console.warn('Flow payments fetch failed:', response.status);
+                if (response.status !== 401 && response.status !== 403) {
+                    setFlowSyncStatus('Falha ao sincronizar. Tente novamente.', 'error');
+                }
+                return false;
+            }
+            if (response.status === 304) {
+                setFlowSyncStatus(`Sem alterações. Última verificação: ${formatTimeNow()}`, 'ok');
+                return true;
+            }
+            const data = await response.json();
+            this.records = data.payments || [];
+            this.save();
+            window.DMF_CONTEXT.pagamentos = this.records;
+            window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+            if (window.DMF_BRAIN) {
+                window.DMF_BRAIN.pagamentos = this.records;
+                window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
+            }
+            if (this.records.length) {
+                setFlowSyncStatus(`Sincronizado às ${formatTimeNow()}`, 'ok');
+            } else {
+                setFlowSyncStatus('Nenhum pagamento encontrado no servidor.', 'warn');
+            }
+            return true;
+        } catch (error) {
+            console.warn('Flow payments fetch unavailable:', error.message);
+            setFlowSyncStatus('Servidor indisponível. Tente novamente.', 'error');
+            return false;
+        }
+    }
+
+    async loadArchivesFromBackend() {
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-archives`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                console.warn('Flow archives fetch failed:', response.status);
+                return false;
+            }
+            const data = await response.json();
+            this.archives = Array.isArray(data.archives) ? data.archives : [];
+            if (window.DMF_CONTEXT) {
+                window.DMF_CONTEXT.archives = this.archives;
+            }
+            return true;
+        } catch (error) {
+            console.warn('Flow archives fetch unavailable:', error.message);
+            return false;
+        }
+    }
+
+    async archiveCurrentFlow() {
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-archives`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                if (response.status === 400 && payload?.pending) {
+                    alert(`Existem ${payload.pending} pagamentos pendentes de assinatura.`);
+                    return false;
+                }
+                alert(payload?.error || 'Não foi possível arquivar o fluxo.');
+                return false;
+            }
+            const data = await response.json();
+            this.records = [];
+            this.save();
+            window.DMF_CONTEXT.pagamentos = this.records;
+            window.DMF_CONTEXT.assinaturas = [];
+            await this.loadArchivesFromBackend();
+            return data?.archive || null;
+        } catch (error) {
+            console.warn('Flow archive create failed:', error.message);
+            alert('Falha ao enviar para Fluxos Anteriores.');
+            return false;
+        }
+    }
+
+    async deleteArchive(id) {
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-archives/${id}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                alert(payload?.error || 'Não foi possível excluir o fluxo.');
+                return false;
+            }
+            await this.loadArchivesFromBackend();
+            return true;
+        } catch (error) {
+            console.warn('Flow archive delete failed:', error.message);
+            alert('Falha ao excluir o fluxo anterior.');
+            return false;
+        }
+    }
+
     import(input) {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role !== 'admin') {
-            alert('Somente o cargo ADMIN pode importar o fluxo de pagamentos.');
+        if (!this.core.admin.hasPermission(this.core.currentUser, 'import_payments')) {
+            alert('Você não tem permissão para importar o fluxo de pagamentos.');
             input.value = '';
             return;
         }
@@ -216,6 +360,7 @@ class DataProcessor {
                         descricao: descricao,
                         valor: Math.abs(Number(r['Valor no Centro de Custo 1'] || r['Valor original da parcela (R$)'] || 0)),
                         centro: r['Centro de Custo 1'] || 'Geral',
+                        categoria: r['Categoria'] || r['Categoria 1'] || r['Categoria da despesa'] || '',
                         assinatura: null,
                         timestamp: new Date().toISOString()
                     };
@@ -231,6 +376,7 @@ class DataProcessor {
                 window.DMF_CONTEXT.pagamentos = this.records;
                 window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
                 console.log('DMF_CONTEXT after import:', window.DMF_CONTEXT);
+                this.syncImportToBackend().catch(() => {});
                 this.core.ui.renderPaymentsTable();
                 this.core.audit.log('IMPORTAÇÃO', `Importado arquivo com ${newPayments.length} registros.`);
             } catch (error) {
@@ -247,10 +393,13 @@ class DataProcessor {
         reader.readAsArrayBuffer(file);
     }
 
-    sign(id) { // ALTERADO
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role !== 'gestor') {
-            alert('Apenas o cargo Gestor pode assinar pagamentos.');
+    async sign(id) { // ALTERADO
+        if (!this.core.currentUser) {
+            alert('Você precisa estar logado para assinar pagamentos.');
+            return false;
+        }
+        if (!this.core.admin.hasPermission(this.core.currentUser, 'sign_payments')) {
+            alert('Você não tem permissão para assinar pagamentos.');
             return false;
         }
         const idx = this.records.findIndex(r => r.id === id);
@@ -259,15 +408,63 @@ class DataProcessor {
         if (r.assinatura) return true; // já assinado // ALTERADO
 
         const u = this.core.currentUser || {};
-        const usuarioNome = (u.nome || u.name || u.usuario || u.email || 'Usuário'); // ALTERADO
+        const nomeSeguro = (value) => {
+            const v = String(value || '').trim();
+            return v;
+        };
+        const displayName = (() => {
+            const nome = nomeSeguro(u.nome || u.name);
+            if (nome && !nome.includes('@')) return nome;
+            const usuario = nomeSeguro(u.usuario || u.username);
+            if (usuario) return usuario;
+            const email = nomeSeguro(u.email);
+            return email || 'Usuário';
+        })();
+        const usuarioNome = displayName; // ALTERADO
         const dataISO = new Date().toISOString(); // ALTERADO
-        const hash = (typeof btoa === 'function')
-            ? btoa(`${id}|${usuarioNome}|${dataISO}`)  // ALTERADO
-            : `${id}-${Date.now()}`; // fallback // ALTERADO
+        let hash = null;
+        try {
+            const response = await fetch(`${getApiBase()}/api/signatures/hmac`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({
+                    paymentId: id,
+                    userName: usuarioNome,
+                    dataISO,
+                    valor: r.valor || '',
+                    centro: r.centro || ''
+                })
+            });
+            if (!response.ok) {
+                alert('Falha ao gerar assinatura segura.');
+                return false;
+            }
+            const data = await response.json();
+            hash = data.hash;
+        } catch (error) {
+            console.warn('Signature hash unavailable:', error.message);
+            alert('Falha ao gerar assinatura segura.');
+            return false;
+        }
 
         r.assinatura = { usuarioNome, dataISO, hash }; // ALTERADO
         this.records[idx] = r; // ALTERADO
         this.save(); // ALTERADO
+        try {
+            await fetch(`${getApiBase()}/api/flow-payments/${id}/sign`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ assinatura: r.assinatura })
+            });
+        } catch (error) {
+            console.warn('Flow payment sign sync failed:', error.message);
+        }
 
         try { // manter telemetria/contexto, sem quebrar se não existir
             if (window.DMF_CONTEXT) {
@@ -281,7 +478,7 @@ class DataProcessor {
         } catch(e) { console.warn('sync ctx/brain falhou', e); } // ALTERADO
 
         // Auditoria e evento (se disponíveis)
-        this.core?.audit?.log?.('ASSINATURA', `Pagamento ${r.fornecedor} assinado por ${usuarioNome}`, 'assinatura', id); // ALTERADO
+            this.core?.audit?.log?.('ASSINATURA', `Pagamento ${r.fornecedor} assinado por ${usuarioNome}`, 'assinatura', id); // ALTERADO
         try { registrarEvento('pagamento_assinado', this.core.currentUser, `Assinado: ${r.fornecedor}`, 'pagamento'); } catch(_) {} // ALTERADO
 
         // Atualizar UI
@@ -292,27 +489,135 @@ class DataProcessor {
     save() {
         localStorage.setItem(this.core.storageKeys.PAYMENTS, JSON.stringify(this.records));
     }
+
+    async syncImportToBackend() {
+        setFlowSyncStatus('Sincronizando importação...', 'info');
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-payments/import`, {
+                method: 'POST',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify(this.records)
+            });
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    alert('Sessão expirada. Faça login novamente para sincronizar o fluxo.');
+                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                }
+                console.warn('Flow payments import failed:', response.status);
+                if (response.status !== 401 && response.status !== 403) {
+                    setFlowSyncStatus('Falha ao sincronizar importação.', 'error');
+                }
+                return;
+            }
+            setFlowSyncStatus(`Importação sincronizada às ${formatTimeNow()}`, 'ok');
+        } catch (error) {
+            console.warn('Flow payments import unavailable:', error.message);
+            setFlowSyncStatus('Servidor indisponível para importação.', 'error');
+        }
+    }
+
+    getCompanyTotals() {
+        const empresas = {
+            JFX: ['RECAP', 'EDISER', 'Carmo Do Rio Claro'],
+            DMF: [
+                'Reisolamento Campina Grande',
+                'Reisolamento Natal',
+                'Manutennção Civil Sede E subestação',
+                'Manutenção Civil AL/PE',
+                'Manutenção Civil Bahia',
+                'Administração Central DJ',
+                'Almeirim e Barreiras',
+                'Barreiras/Almeirim'
+            ],
+            'Real Energy': ['Campos Novos', 'Vitória da Conquista']
+        };
+
+        const normalize = (value) => String(value || '').trim().toLowerCase();
+        const centersByCompany = Object.fromEntries(
+            Object.entries(empresas).map(([company, centers]) => [
+                company,
+                centers.map(normalize)
+            ])
+        );
+
+        const totals = {};
+        Object.keys(centersByCompany).forEach(company => {
+            totals[company] = 0;
+        });
+        totals.Outros = 0;
+
+        (this.records || []).forEach((p) => {
+            const centro = normalize(p.centro);
+            const valor = Math.abs(Number(p.valor) || 0);
+            let matched = false;
+            for (const [company, centers] of Object.entries(centersByCompany)) {
+                if (centers.includes(centro)) {
+                    totals[company] += valor;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                totals.Outros += valor;
+            }
+        });
+
+        return totals;
+    }
     
     export() {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role !== 'admin') {
-            alert('Somente o cargo ADMIN pode exportar o fluxo de pagamentos.');
+        if (!this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
+            alert('Você não tem permissão para exportar o fluxo de pagamentos.');
             return;
         }
         // Preparar dados para exportação na ordem da tabela
-        const exportData = this.records.map(p => ({
-            Fornecedor: p.fornecedor,
-            Data: p.data,
-            Descrição: p.descricao || "",
-            Valor: p.valor,
-            "Centro de Custo": p.centro,
-            Status: p.assinatura ? 'Assinado' : 'Pendente',
-            Assinatura: p.assinatura
-                ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')} (ID: ${p.assinatura.hash})` // ALTERADO
-                : '-'
-        }));
+        const header = [
+            'Fornecedor',
+            'Data',
+            'Descrição',
+            'Valor',
+            'Centro de Custo',
+            'Categoria',
+            'Status',
+            'Assinatura',
+            'ID da Assinatura',
+            '',
+            '',
+            'Empresa',
+            'Total'
+        ];
 
-        const ws = XLSX.utils.json_to_sheet(exportData);
+        const rows = this.records.map(p => ([
+            p.fornecedor,
+            p.data,
+            p.descricao || "",
+            p.valor,
+            p.centro,
+            p.categoria || "",
+            p.assinatura ? 'Assinado' : 'Pendente',
+            p.assinatura
+                ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')}` // ALTERADO
+                : '-',
+            p.assinatura?.hash || '-',
+            '',
+            '',
+            '',
+            ''
+        ]));
+
+        const totals = this.getCompanyTotals();
+        const totalRows = [
+            ['','','','','','','','','','','', 'DMF', `R$ ${totals.DMF.toLocaleString('pt-BR')}`],
+            ['','','','','','','','','','','', 'JFX', `R$ ${totals.JFX.toLocaleString('pt-BR')}`],
+            ['','','','','','','','','','','', 'REAL', `R$ ${totals['Real Energy'].toLocaleString('pt-BR')}`]
+        ];
+
+        const aoa = [header, ...rows, ...totalRows];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Fluxo DMF");
         XLSX.writeFile(wb, "DMF_Financeiro_Assinado.xlsx");
@@ -327,6 +632,7 @@ class DataProcessor {
             console.log('DMF_CONTEXT after clearAll:', window.DMF_CONTEXT);
             this.core.ui.renderPaymentsTable();
             this.core.audit.log('LIMPEZA', 'Todo o fluxo de pagamentos foi removido.');
+            this.syncImportToBackend().catch(() => {});
             alert('Fluxo de pagamentos removido com sucesso.');
         }
     }
@@ -364,6 +670,7 @@ class DataProcessor {
             descricao: (descricao || '').trim(), // ALTERADO
             valor: Math.abs(Number(valor) || 0), // ALTERADO
             centro: (centro || 'Geral').trim() || 'Geral', // ALTERADO
+            categoria: '',
             assinatura: null, // começa Pendente por regra do sistema // ALTERADO
             timestamp: new Date().toISOString() // ALTERADO
         };
@@ -371,6 +678,7 @@ class DataProcessor {
         this.ensureCostCenter(record.centro); // registra o centro // ALTERADO
         if (window.assistant) window.assistant.addLearning("centros_de_custo", record.centro); // ALTERADO
         this.save(); // ALTERADO
+        this.syncPaymentToBackend(record).catch(() => {});
 
         // Manter contextos em sincronia (com segurança) // ALTERADO
         try { if (window.DMF_CONTEXT) {
@@ -389,12 +697,39 @@ class DataProcessor {
         return record; // ALTERADO
     }
 
-    syncFromAPI() {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role !== 'admin') {
-            alert('Somente o cargo ADMIN pode importar/sincronizar o fluxo de pagamentos.');
-            return;
+    async syncPaymentToBackend(record) {
+        setFlowSyncStatus('Sincronizando pagamento...', 'info');
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+                method: 'POST',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify(record)
+            });
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    alert('Sessão expirada. Faça login novamente para sincronizar o pagamento.');
+                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                }
+                console.warn('Flow payment create failed:', response.status);
+                if (response.status !== 401 && response.status !== 403) {
+                    setFlowSyncStatus('Falha ao sincronizar pagamento.', 'error');
+                }
+                return;
+            }
+            setFlowSyncStatus(`Pagamento sincronizado às ${formatTimeNow()}`, 'ok');
+        } catch (error) {
+            console.warn('Flow payment create unavailable:', error.message);
+            setFlowSyncStatus('Servidor indisponível para pagamento.', 'error');
         }
+    }
+
+    syncFromAPI() {
+        alert('Sincronização com Conta Azul desativada temporariamente. Use a importação manual.');
+        return;
         const apiBase = getApiBase();
         fetch(`${apiBase}/api/payments`, {
             headers: {
@@ -504,12 +839,13 @@ class UIManager {
     constructor(core) { this.core = core; }
 
     navigate(viewId, activeButton = null) {
-        if (viewId === 'admin') {
-            const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-            if (role !== 'admin') {
-                alert('Acesso restrito à administração.');
-                return;
-            }
+        if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
+            alert('Acesso restrito à administração.');
+            return;
+        }
+        if (viewId === 'audit' && !this.core.admin.hasPermission(this.core.currentUser, 'audit_access')) {
+            alert('Acesso restrito aos logs de auditoria.');
+            return;
         }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         document.getElementById(viewId).classList.remove('hidden');
@@ -529,6 +865,12 @@ class UIManager {
                 this.renderUsersTable();
             });
         }
+
+        if (viewId === 'payments') {
+            this.startFlowAutoRefresh();
+        } else {
+            this.stopFlowAutoRefresh();
+        }
     }
 
     showLogin() {
@@ -543,16 +885,47 @@ class UIManager {
         if (this.core.currentUser) this.core.currentUser.cargo = role;
         document.getElementById('userRoleBadge').innerText = (role || '—').toUpperCase();
 
-        if (role === 'admin') {
+        if (this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             document.getElementById('adminMenu').classList.remove('hidden');
         }
 
-        this.renderPaymentsTable();
-        this.updateStats();
-        this.initCharts();
+        this.core.data.loadFromBackend().then(() => {
+            this.renderPaymentsTable();
+            this.updateStats();
+            this.initCharts();
+        });
         this.renderAdminContent();
         this.applyRolePermissions();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
+    }
+
+    startFlowAutoRefresh() {
+        if (this.flowAutoRefreshTimer) return;
+        this.flowAutoRefreshBusy = true;
+        this.core.data.loadFromBackend().then(() => {
+            this.renderPaymentsTable();
+            this.updateStats();
+            this.initCharts();
+        }).finally(() => {
+            this.flowAutoRefreshBusy = false;
+        });
+        this.flowAutoRefreshTimer = setInterval(() => {
+            if (this.flowAutoRefreshBusy) return;
+            this.flowAutoRefreshBusy = true;
+            this.core.data.loadFromBackend().then(() => {
+                this.renderPaymentsTable();
+                this.updateStats();
+            }).finally(() => {
+                this.flowAutoRefreshBusy = false;
+            });
+        }, 5000);
+    }
+
+    stopFlowAutoRefresh() {
+        if (this.flowAutoRefreshTimer) {
+            clearInterval(this.flowAutoRefreshTimer);
+            this.flowAutoRefreshTimer = null;
+        }
     }
 
     switchAdminTab(tab, activeButton = null) {
@@ -562,9 +935,29 @@ class UIManager {
         if (activeButton) activeButton.classList.add('active');
     }
 
+    switchAuditTab(tab, activeButton = null) {
+        document.querySelectorAll('.audit-tab-content').forEach(t => t.classList.add('hidden'));
+        document.querySelectorAll('[data-audit-tab]').forEach(b => b.classList.remove('active'));
+        document.getElementById(`audit${tab.charAt(0).toUpperCase()}${tab.slice(1)}Tab`).classList.remove('hidden');
+        if (activeButton) activeButton.classList.add('active');
+    }
+
+    switchPaymentsTab(tab, activeButton = null) {
+        document.querySelectorAll('.payments-tab-content').forEach(t => t.classList.add('hidden'));
+        document.querySelectorAll('[data-payments-tab]').forEach(b => b.classList.remove('active'));
+        const target = tab === 'history' ? 'paymentsHistoryTab' : 'paymentsCurrentTab';
+        document.getElementById(target).classList.remove('hidden');
+        if (activeButton) activeButton.classList.add('active');
+
+        if (tab === 'history') {
+            this.core.data.loadArchivesFromBackend().then(() => {
+                this.renderFlowArchivesList();
+            });
+        }
+    }
+
     renderAdminContent() {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role === 'admin') {
+        if (this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
             });
@@ -575,20 +968,42 @@ class UIManager {
     }
 
     applyRolePermissions() {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        const isAdmin = role === 'admin';
+        const isAdminAccess = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const adminMenu = document.getElementById('adminMenu');
         if (adminMenu) {
-            adminMenu.classList.toggle('hidden', !isAdmin);
+            adminMenu.classList.toggle('hidden', !isAdminAccess);
         }
 
         const importBtn = document.getElementById('btnImportPayments');
         const exportBtn = document.getElementById('btnExportPayments');
-        [importBtn, exportBtn].forEach(btn => {
-            if (!btn) return;
-            btn.classList.toggle('hidden', !isAdmin);
-            btn.disabled = !isAdmin;
-        });
+        const addPaymentBtn = document.getElementById('btnAddPayment');
+        const auditNavBtn = document.querySelector('[data-nav="audit"]');
+        const archiveBtn = document.getElementById('btnArchiveFlow');
+
+        const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
+        const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
+        const canAdd = this.core.admin.hasPermission(this.core.currentUser, 'add_payments');
+        const canAudit = this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
+
+        if (importBtn) {
+            importBtn.classList.toggle('hidden', !canImport);
+            importBtn.disabled = !canImport;
+        }
+        if (exportBtn) {
+            exportBtn.classList.toggle('hidden', !canExport);
+            exportBtn.disabled = !canExport;
+        }
+        if (addPaymentBtn) {
+            addPaymentBtn.classList.toggle('hidden', !canAdd);
+            addPaymentBtn.disabled = !canAdd;
+        }
+        if (archiveBtn) {
+            archiveBtn.classList.toggle('hidden', !isAdminAccess);
+            archiveBtn.disabled = !isAdminAccess;
+        }
+        if (auditNavBtn) {
+            auditNavBtn.classList.toggle('hidden', !canAudit);
+        }
     }
 
     renderUsersTable() {
@@ -677,6 +1092,91 @@ class UIManager {
         }
     }
 
+    renderFlowArchivesList() {
+        const list = document.getElementById('flowArchivesList');
+        if (!list) return;
+        const archives = this.core.data.archives || [];
+        if (!archives.length) {
+            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponível.</div>`;
+            const detail = document.getElementById('flowArchiveDetail');
+            if (detail) detail.innerHTML = '';
+            return;
+        }
+        list.innerHTML = archives.map(a => `
+            <button class="flow-archive-item" data-archive-id="${a.id}">${a.label}</button>
+        `).join('');
+
+        if (!list.dataset.boundArchiveClick) {
+            list.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-archive-id]');
+                if (!button) return;
+                const id = button.getAttribute('data-archive-id');
+                const selected = (this.core.data.archives || []).find(a => a.id === id);
+                list.querySelectorAll('.flow-archive-item').forEach(b => b.classList.remove('active'));
+                button.classList.add('active');
+                this.renderFlowArchiveDetail(selected);
+            });
+            list.dataset.boundArchiveClick = 'true';
+        }
+
+        const first = list.querySelector('[data-archive-id]');
+        if (first && !list.querySelector('.flow-archive-item.active')) {
+            first.classList.add('active');
+            const id = first.getAttribute('data-archive-id');
+            const selected = archives.find(a => a.id === id);
+            this.renderFlowArchiveDetail(selected);
+        }
+    }
+
+    renderFlowArchiveDetail(archive) {
+        const detail = document.getElementById('flowArchiveDetail');
+        if (!detail) return;
+        if (!archive) {
+            detail.innerHTML = '';
+            return;
+        }
+        const canDelete = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const payments = Array.isArray(archive.payments) ? archive.payments : [];
+        const rows = payments.map(p => `
+            <tr>
+                <td>${p.fornecedor || ''}</td>
+                <td>${p.data || ''}</td>
+                <td>${p.descricao || ''}</td>
+                <td>R$ ${Number(p.valor || 0).toLocaleString('pt-BR')}</td>
+                <td>${p.centro || ''}</td>
+                <td>${p.categoria || ''}</td>
+                <td>${p.assinatura ? 'Assinado' : 'Pendente'}</td>
+                <td>${p.assinatura ? `Assinado por ${p.assinatura.usuarioNome}` : '-'}</td>
+                <td>${p.assinatura?.hash || '-'}</td>
+            </tr>
+        `).join('');
+
+        detail.innerHTML = `
+            <div class="flex-header">
+                <strong>${archive.label}</strong>
+                ${canDelete ? `<button class="btn btn-danger" data-archive-delete="${archive.id}">Excluir</button>` : ''}
+            </div>
+            <div class="data-table-wrapper data-table-spaced">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Fornecedor</th>
+                            <th>Data</th>
+                            <th>Descrição</th>
+                            <th>Valor</th>
+                            <th>Centro de Custo</th>
+                            <th>Categoria</th>
+                            <th>Status</th>
+                            <th>Assinatura</th>
+                            <th>ID da Assinatura</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
     openCreateUserModal() {
         const modal = document.getElementById('createUserModal');
         if (modal) {
@@ -739,8 +1239,19 @@ class UIManager {
     }
 
     editUser(id) {
-        const user = this.core.admin.users.find(u => u.id === id);
+        const user = this.core.admin.users.find(u => Number(u.id) === Number(id));
         if(!user) return;
+        // Populate role select with current roles
+        const roleSelect = document.getElementById('editUserRole');
+        if (roleSelect) {
+            roleSelect.innerHTML = '';
+            this.core.admin.roles.forEach(role => {
+                const option = document.createElement('option');
+                option.value = role.name;
+                option.textContent = role.name;
+                roleSelect.appendChild(option);
+            });
+        }
         // Populate edit modal
         document.getElementById('editUserName').value = user.nome;
         document.getElementById('editUserUsername').value = user.usuario;
@@ -751,7 +1262,7 @@ class UIManager {
     }
 
     changePassword(id) {
-        const user = this.core.admin.users.find(u => u.id === id);
+        const user = this.core.admin.users.find(u => Number(u.id) === Number(id));
         if(!user) return;
         document.getElementById('changePasswordUserId').value = user.id;
         document.getElementById('changePasswordUserName').textContent = user.nome;
@@ -816,11 +1327,10 @@ class UIManager {
 
         body.innerHTML = this.core.data.records.map(p => {
             const assinaturaStr = p.assinatura
-                ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')} (ID: ${p.assinatura.hash})` // ALTERADO
+                ? `Assinado por: ${p.assinatura.usuarioNome}` // ALTERADO
                 : '-'; // ALTERADO
 
-            const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-            const canSign = role === 'gestor';
+            const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
             const acoesHtml = p.assinatura
                 ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
                 : (canSign ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
@@ -832,6 +1342,7 @@ class UIManager {
                     <td>${(p.descricao || '').trim() || '—'}</td>
                     <td>R$ ${(Number(p.valor)||0).toLocaleString('pt-BR')}</td>
                     <td>${p.centro || ''}</td>
+                    <td>${(p.categoria || '').trim() || '—'}</td>
                     <td><span>${p.assinatura ? 'Assinado' : 'Pendente'}</span></td>
                     <td><small>${assinaturaStr}</small></td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
@@ -840,6 +1351,7 @@ class UIManager {
         }).join('');
 
         this.updateStats && this.updateStats(); // manter comportamento existente // ALTERADO
+        this.renderCompanyTotals && this.renderCompanyTotals();
 
         if (!body.dataset.boundPayments) {
             body.addEventListener('click', (event) => {
@@ -865,6 +1377,24 @@ class UIManager {
         document.getElementById('totalPendentes').innerText = data.filter(p => !p.assinatura).length;
     }
 
+    renderCompanyTotals() {
+        const container = document.getElementById('companyTotalsBody');
+        if (!container) return;
+        const totals = this.core.data.getCompanyTotals();
+
+        const rows = Object.entries(totals)
+            .filter(([, total]) => total > 0)
+            .map(([company, total]) => `
+                <div class="company-total-row">
+                    <span>${company}</span>
+                    <strong>R$ ${total.toLocaleString('pt-BR')}</strong>
+                </div>
+            `)
+            .join('');
+
+        container.innerHTML = rows || '<div class="company-total-empty">Sem dados para exibir.</div>';
+    }
+
     parseValorInput(v) { // ALTERADO
         if (typeof v === 'number') return v;
         const s = String(v || '').trim();
@@ -876,6 +1406,10 @@ class UIManager {
     } // ALTERADO
 
     addPaymentFromModal(){ // EXISTENTE ou NOVO // ALTERADO
+      if (!this.core.admin.hasPermission(this.core.currentUser, 'add_payments')) {
+        alert('Você não tem permissão para adicionar pagamentos.');
+        return;
+      }
       const form = document.getElementById('addPaymentForm');
       const fd = new FormData(form);
       const fornecedor = (fd.get('fornecedor') || '').trim();
@@ -959,6 +1493,67 @@ class AuditLogger {
         body.innerHTML = this.logs.slice(0, 50).map(l => `
             <tr><td>${new Date(l.dataISO).toLocaleString()}</td><td>${l.userEmail || 'Sistema'}</td><td><strong>${l.acao}</strong></td><td>${l.detalhes || ''}</td></tr>
         `).join('');
+    }
+
+    async searchSignatureById() {
+        const input = document.getElementById('signatureSearchInput');
+        const result = document.getElementById('signatureSearchResult');
+        if (!input || !result) return;
+        const query = String(input.value || '').trim();
+        if (!query) {
+            result.innerHTML = '<div class="signature-search-empty">Informe um ID de assinatura.</div>';
+            return;
+        }
+
+        const match = (this.core.data.records || []).find(p => p.assinatura && String(p.assinatura.hash) === query);
+        if (!match) {
+            result.innerHTML = '<div class="signature-search-empty">Assinatura não encontrada.</div>';
+            return;
+        }
+
+        const assinaturaData = match.assinatura?.dataISO
+            ? new Date(match.assinatura.dataISO).toLocaleString('pt-BR')
+            : '-';
+
+        let validStatus = 'Verificando...';
+        try {
+            const verify = await fetch(`${getApiBase()}/api/signatures/verify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({
+                    paymentId: match.id,
+                    userName: match.assinatura?.usuarioNome || '',
+                    dataISO: match.assinatura?.dataISO || '',
+                    valor: match.valor || '',
+                    centro: match.centro || '',
+                    hash: match.assinatura?.hash || ''
+                })
+            });
+            if (verify.ok) {
+                const data = await verify.json();
+                validStatus = data.valid ? 'VÁLIDA' : 'INVÁLIDA';
+            } else {
+                validStatus = 'NÃO VERIFICADA';
+            }
+        } catch (error) {
+            validStatus = 'NÃO VERIFICADA';
+        }
+
+        result.innerHTML = `
+            <div class="signature-search-card">
+                <div><strong>Fornecedor:</strong> ${match.fornecedor || '-'}</div>
+                <div><strong>Data:</strong> ${match.data || '-'}</div>
+                <div><strong>Valor:</strong> R$ ${(Number(match.valor)||0).toLocaleString('pt-BR')}</div>
+                <div><strong>Centro de Custo:</strong> ${match.centro || '-'}</div>
+                <div><strong>Assinado por:</strong> ${match.assinatura?.usuarioNome || '-'}</div>
+                <div><strong>Assinado em:</strong> ${assinaturaData}</div>
+                <div><strong>ID da Assinatura:</strong> ${match.assinatura?.hash || '-'}</div>
+                <div><strong>Validação:</strong> ${validStatus}</div>
+            </div>
+        `;
     }
 }
 
@@ -1099,7 +1694,7 @@ class AdminManager {
             }
             const data = await response.json();
             const users = (data.users || []).map(u => ({
-                id: u.id,
+                id: Number(u.id),
                 nome: u.name || u.username,
                 usuario: u.username,
                 email: u.email,
@@ -1118,8 +1713,7 @@ class AdminManager {
     }
 
     requireAdmin() {
-        const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
-        if (role !== 'admin') {
+        if (!this.hasPermission(this.core.currentUser, 'admin_access')) {
             alert('Somente o cargo ADMIN pode gerenciar usuários e cargos.');
             return false;
         }
@@ -1188,14 +1782,19 @@ class AdminManager {
                 console.warn('API register failed:', response.status);
             }
         } catch (error) {
-            console.warn('API register unavailable, storing locally:', error.message);
+            console.warn('API register unavailable:', error.message);
+        }
+
+        if (!apiUser) {
+            alert('Falha ao criar usuário no servidor. Verifique sua conexão e tente novamente.');
+            return;
         }
 
         const newUser = {
-            id: apiUser?.id || Date.now(),
-            nome,
-            usuario: apiUser?.username || normalizedUsername,
-            email: apiUser?.email || normalizedEmail,
+            id: Number(apiUser.id),
+            nome: apiUser.name || nome,
+            usuario: apiUser.username,
+            email: apiUser.email,
             senha: hash(senha),
             cargo
         };
@@ -1203,14 +1802,14 @@ class AdminManager {
         this.saveUsers();
         window.DMF_CONTEXT.usuarios = this.users;
         console.log('DMF_CONTEXT after createUser:', window.DMF_CONTEXT);
-        this.core.audit.log('CRIAÇÃO USUÁRIO', `Usuário ${nome} criado com cargo ${cargo}.`);
+        this.core.audit.log('CRIAÇÃO USUÁRIO', `Usuário ${newUser.nome} criado com cargo ${cargo}.`);
         alert('Usuário criado com sucesso.');
         return newUser;
     }
 
     async updateUser(id, updates) {
         if (!this.requireAdmin()) return;
-        const user = this.users.find(u => u.id === id);
+        const user = this.users.find(u => Number(u.id) === Number(id));
         if (!user) return;
         const normalizedUpdates = { ...updates };
         if (normalizedUpdates.email) normalizedUpdates.email = this.normalizeEmail(normalizedUpdates.email);
@@ -1264,11 +1863,23 @@ class AdminManager {
             } else if (response.status === 409) {
                 alert('Usuário já existe.');
                 return;
+            } else if (response.status === 401 || response.status === 403) {
+                alert('Sem permissão para atualizar usuários.');
+                return;
             } else {
                 console.warn('API update failed:', response.status);
+                alert('Falha ao atualizar usuário no servidor.');
+                return;
             }
         } catch (error) {
-            console.warn('API update unavailable, updating locally:', error.message);
+            console.warn('API update unavailable:', error.message);
+            alert('Falha ao atualizar usuário no servidor.');
+            return;
+        }
+
+        if (!apiUpdated) {
+            alert('Falha ao atualizar usuário no servidor.');
+            return;
         }
 
         Object.assign(user, {
@@ -1287,12 +1898,10 @@ class AdminManager {
 
     async deleteUser(id) {
         if (!this.requireAdmin()) return;
-        if (this.core.currentUser && this.core.currentUser.id === id) {
+        if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
             alert('Não é permitido excluir o próprio usuário logado.');
             return;
         }
-        let apiOk = false;
-        let apiFailed = false;
         try {
             const response = await fetch(`${getApiBase()}/api/users/${id}`, {
                 method: 'DELETE',
@@ -1302,25 +1911,26 @@ class AdminManager {
             });
             if (response.ok) {
                 const data = await response.json();
-                apiOk = !!data.success;
+                if (!data.success) {
+                    alert('Erro ao excluir usuário.');
+                    return;
+                }
             } else {
                 console.warn('API delete failed:', response.status);
-                apiFailed = true;
+                alert('Erro ao excluir usuário.');
+                return;
             }
         } catch (error) {
-            console.warn('API delete unavailable, deleting locally:', error.message);
-            apiFailed = true;
+            console.warn('API delete unavailable:', error.message);
+            alert('Erro ao excluir usuário.');
+            return;
         }
 
-        if (apiOk || apiFailed || !getAuthHeaders().Authorization) {
-            this.users = this.users.filter(u => u.id !== id);
-            this.saveUsers();
-            this.core.audit.log('EXCLUSÃO USUÁRIO', `Usuário ID ${id} excluído.`);
-            this.core.ui.renderUsersTable();
-            alert('Usuário excluído com sucesso.');
-        } else {
-            alert('Erro ao excluir usuário.');
-        }
+        this.users = this.users.filter(u => Number(u.id) !== Number(id));
+        this.saveUsers();
+        this.core.audit.log('EXCLUSÃO USUÁRIO', `Usuário ID ${id} excluído.`);
+        this.core.ui.renderUsersTable();
+        alert('Usuário excluído com sucesso.');
     }
 
     createRole() {
@@ -1352,10 +1962,12 @@ class AdminManager {
         const cargo = formData.get('userRole');
 
         if (nome && usuario && email && senha && cargo) {
-            this.createUser(nome, email, senha, cargo, usuario);
-            this.core.ui.closeModal('createUserModal');
-            this.core.ui.renderUsersTable();
-            form.reset();
+            this.createUser(nome, email, senha, cargo, usuario).then((created) => {
+                if (!created) return;
+                this.core.ui.closeModal('createUserModal');
+                this.core.ui.renderUsersTable();
+                form.reset();
+            });
         } else {
             alert('Por favor, preencha todos os campos obrigatórios.');
         }
@@ -1367,10 +1979,19 @@ class AdminManager {
         const formData = new FormData(form);
         const name = formData.get('roleName')?.trim();
         const permissions = [];
-        if (document.getElementById('rolePermSignPayments').checked) permissions.push('sign_payments');
-        if (document.getElementById('rolePermManageUsers').checked) permissions.push('manage_users');
-        if (document.getElementById('rolePermViewAdmin').checked) permissions.push('admin_access');
-        if (document.getElementById('rolePermAccessAudit').checked) permissions.push('audit_access');
+        const addPayments = document.getElementById('rolePermAddPayments')?.value === 'yes';
+        const signPayments = document.getElementById('rolePermSignPayments')?.value === 'yes';
+        const viewAdmin = document.getElementById('rolePermViewAdmin')?.value === 'yes';
+        const accessAudit = document.getElementById('rolePermAccessAudit')?.value === 'yes';
+        const importPayments = document.getElementById('rolePermImportPayments')?.value === 'yes';
+        const exportPayments = document.getElementById('rolePermExportPayments')?.value === 'yes';
+
+        if (addPayments) permissions.push('add_payments');
+        if (signPayments) permissions.push('sign_payments');
+        if (viewAdmin) permissions.push('admin_access');
+        if (accessAudit) permissions.push('audit_access');
+        if (importPayments) permissions.push('import_payments');
+        if (exportPayments) permissions.push('export_payments');
 
         if (!name) {
             alert('Por favor, preencha o nome do cargo.');
@@ -1776,6 +2397,17 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    const refreshPaymentsButton = document.getElementById('btnRefreshPayments');
+    if (refreshPaymentsButton) {
+        refreshPaymentsButton.addEventListener('click', function () {
+            system?.data?.loadFromBackend?.().then(() => {
+                system?.ui?.renderPaymentsTable?.();
+                system?.ui?.updateStats?.();
+                system?.ui?.initCharts?.();
+            });
+        });
+    }
+
     const createUserButton = document.getElementById('btnCreateUser');
     if (createUserButton) {
         createUserButton.addEventListener('click', function () {
@@ -1821,6 +2453,85 @@ document.addEventListener('DOMContentLoaded', function() {
             system.ui.switchAdminTab(tab, this);
         });
     });
+
+    document.querySelectorAll('[data-audit-tab]').forEach(button => {
+        button.addEventListener('click', function() {
+            const tab = this.getAttribute('data-audit-tab');
+            system.ui.switchAuditTab(tab, this);
+        });
+    });
+
+    document.querySelectorAll('[data-payments-tab]').forEach(button => {
+        button.addEventListener('click', function() {
+            const tab = this.getAttribute('data-payments-tab');
+            system.ui.switchPaymentsTab(tab, this);
+        });
+    });
+
+    const archiveFlowButton = document.getElementById('btnArchiveFlow');
+    if (archiveFlowButton) {
+        archiveFlowButton.addEventListener('click', function () {
+            if (!confirm('Enviar todo o fluxo atual para Fluxos Anteriores? Isso irá limpar o fluxo atual.')) {
+                return;
+            }
+            system?.data?.archiveCurrentFlow?.().then((archive) => {
+                if (!archive) return;
+                system?.ui?.renderPaymentsTable?.();
+                system?.ui?.updateStats?.();
+                system?.data?.loadArchivesFromBackend?.().then(() => {
+                    system?.ui?.renderFlowArchivesList?.();
+                });
+                const historyBtn = document.querySelector('[data-payments-tab="history"]');
+                if (historyBtn) {
+                    system.ui.switchPaymentsTab('history', historyBtn);
+                }
+            });
+        });
+    }
+
+    const refreshArchivesButton = document.getElementById('btnRefreshArchives');
+    if (refreshArchivesButton) {
+        refreshArchivesButton.addEventListener('click', function () {
+            system?.data?.loadArchivesFromBackend?.().then(() => {
+                system?.ui?.renderFlowArchivesList?.();
+            });
+        });
+    }
+
+    const flowArchiveDetail = document.getElementById('flowArchiveDetail');
+    if (flowArchiveDetail) {
+        flowArchiveDetail.addEventListener('click', function (event) {
+            const button = event.target.closest('[data-archive-delete]');
+            if (!button) return;
+            const id = button.getAttribute('data-archive-delete');
+            if (!id) return;
+            if (!confirm('Deseja excluir este fluxo anterior? Esta ação não pode ser desfeita.')) {
+                return;
+            }
+            system?.data?.deleteArchive?.(id).then((ok) => {
+                if (!ok) return;
+                system?.ui?.renderFlowArchivesList?.();
+                const detail = document.getElementById('flowArchiveDetail');
+                if (detail) detail.innerHTML = '';
+            });
+        });
+    }
+
+    const signatureSearchButton = document.getElementById('signatureSearchButton');
+    if (signatureSearchButton) {
+        signatureSearchButton.addEventListener('click', function () {
+            system.ui.searchSignatureById();
+        });
+    }
+
+    const signatureSearchInput = document.getElementById('signatureSearchInput');
+    if (signatureSearchInput) {
+        signatureSearchInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                system.ui.searchSignatureById();
+            }
+        });
+    }
 
     const addPaymentForm = document.getElementById('addPaymentForm'); // ALTERADO
     if (addPaymentForm) { // ALTERADO

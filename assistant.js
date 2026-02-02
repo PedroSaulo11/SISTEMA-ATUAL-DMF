@@ -198,6 +198,17 @@ class IntelligentAssistant {
     processarPergunta(question) {
         const brain = window.DMF_BRAIN;
         const intencao = this.analisarIntencao(question);
+        const signatureHash = this.extrairHashAssinatura(question);
+        if (signatureHash) {
+            this.validarAssinatura(signatureHash);
+            return "Verificando assinatura, aguarde...";
+        }
+
+        const respostaIntencao = this.responderPorIntencao(question, intencao);
+        if (respostaIntencao) {
+            this.adicionarMemoriaInteracao(question, respostaIntencao, intencao);
+            return respostaIntencao;
+        }
 
         // Verificar resposta otimizada baseada no aprendizado
         const optimized = this.getOptimizedAnswer(question); // ALTERADO
@@ -221,6 +232,214 @@ class IntelligentAssistant {
         this.aprenderComResposta(question, resposta, intencao);
 
         return resposta;
+    }
+
+    responderPorIntencao(pergunta, intencao) {
+        const normalized = this.normalizeText(pergunta);
+
+        if (normalized.includes('gastos') || normalized.includes('pagamentos')) {
+            return this.responderGastos(pergunta);
+        }
+
+        if (normalized.includes('assinatura') || normalized.includes('assinar')) {
+            return this.responderAssinaturaContexto();
+        }
+
+        if (normalized.includes('log') || normalized.includes('auditoria')) {
+            return this.responderLogs();
+        }
+
+        if (normalized.includes('ajuda')) {
+            return this.responderAjuda();
+        }
+
+        return null;
+    }
+
+    adicionarMemoriaInteracao(pergunta, resposta, intencao) {
+        const memoria = JSON.parse(localStorage.getItem('dmf_assistant_recent')) || [];
+        memoria.push({ pergunta, resposta, intencao, timestamp: new Date().toISOString() });
+        while (memoria.length > 5) memoria.shift();
+        localStorage.setItem('dmf_assistant_recent', JSON.stringify(memoria));
+    }
+
+    obterMemoriaRecente() {
+        return JSON.parse(localStorage.getItem('dmf_assistant_recent')) || [];
+    }
+
+    responderGastos(pergunta) {
+        const pagamentos = (window.DMF_CONTEXT && window.DMF_CONTEXT.pagamentos) || [];
+        if (!pagamentos.length) {
+            return "Não há pagamentos registrados para calcular gastos.";
+        }
+
+        const empresa = this.extrairEmpresa(pergunta);
+        const mesAno = this.extrairMesAno(pergunta);
+        const total = this.calcularTotal(pagamentos, empresa, mesAno);
+        const labelEmpresa = empresa || 'todas as empresas';
+        const labelMes = mesAno ? `${mesAno.mes}/${mesAno.ano}` : 'todos os períodos';
+
+        return `Total de gastos (${labelEmpresa}, ${labelMes}): R$ ${total.toLocaleString('pt-BR')}.`;
+    }
+
+    extrairEmpresa(pergunta) {
+        const normalized = this.normalizeText(pergunta);
+        if (normalized.includes('jfx')) return 'JFX';
+        if (normalized.includes('dmf')) return 'DMF';
+        if (normalized.includes('real energy') || normalized.includes('realenergy') || normalized.includes('real')) return 'Real Energy';
+        return null;
+    }
+
+    extrairMesAno(pergunta) {
+        const normalized = this.normalizeText(pergunta);
+        const meses = {
+            janeiro: 0, fevereiro: 1, marco: 2, março: 2, abril: 3, maio: 4, junho: 5,
+            julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11
+        };
+        for (const [mes, idx] of Object.entries(meses)) {
+            if (normalized.includes(mes)) {
+                const anoMatch = normalized.match(/20\d{2}/);
+                const ano = anoMatch ? Number(anoMatch[0]) : new Date().getFullYear();
+                return { mes: idx + 1, ano };
+            }
+        }
+        if (normalized.includes('mensal') || normalized.includes('este mes') || normalized.includes('mes atual')) {
+            const now = new Date();
+            return { mes: now.getMonth() + 1, ano: now.getFullYear() };
+        }
+        return null;
+    }
+
+    calcularTotal(pagamentos, empresa, mesAno) {
+        const empresas = {
+            JFX: ['RECAP', 'EDISER', 'Carmo Do Rio Claro'],
+            DMF: [
+                'Reisolamento Campina Grande',
+                'Reisolamento Natal',
+                'Manutennção Civil Sede E subestação',
+                'Manutenção Civil AL/PE',
+                'Manutenção Civil Bahia',
+                'Administração Central DJ',
+                'Almeirim e Barreiras',
+                'Barreiras/Almeirim'
+            ],
+            'Real Energy': ['Campos Novos', 'Vitória da Conquista']
+        };
+        const normalize = (value) => String(value || '').trim().toLowerCase();
+        const centers = empresa ? (empresas[empresa] || []).map(normalize) : null;
+
+        return (pagamentos || []).reduce((acc, p) => {
+            const valor = Math.abs(Number(p.valor) || 0);
+            const centro = normalize(p.centro);
+            if (centers && !centers.includes(centro)) return acc;
+            if (mesAno) {
+                const data = this.parseDate(p.data);
+                if (!data) return acc;
+                if ((data.getMonth() + 1) !== mesAno.mes || data.getFullYear() !== mesAno.ano) {
+                    return acc;
+                }
+            }
+            return acc + valor;
+        }, 0);
+    }
+
+    parseDate(value) {
+        if (!value) return null;
+        const asDate = new Date(value);
+        if (!isNaN(asDate.getTime())) return asDate;
+        const parts = String(value).split('/');
+        if (parts.length === 3) {
+            const [d, m, y] = parts.map(Number);
+            const parsed = new Date(y, m - 1, d);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+        return null;
+    }
+
+    responderAssinaturaContexto() {
+        const assinaturas = (window.DMF_CONTEXT && window.DMF_CONTEXT.assinaturas) || [];
+        if (!assinaturas.length) {
+            return "Não encontrei assinaturas registradas.";
+        }
+        const ultima = assinaturas
+            .slice()
+            .sort((a, b) => new Date(b.assinatura.dataISO) - new Date(a.assinatura.dataISO))[0];
+        return `Última assinatura: ${ultima.fornecedor} por ${ultima.assinatura.usuarioNome} em ${new Date(ultima.assinatura.dataISO).toLocaleString('pt-BR')}.`;
+    }
+
+    responderLogs() {
+        const logs = (window.DMF_CONTEXT && window.DMF_CONTEXT.logs) || [];
+        if (!logs.length) return "Nenhum log recente disponível.";
+        const recentes = logs.slice(-3).map(l => `${l.acao || 'Ação'}: ${l.detalhes || ''}`).join(' | ');
+        return `Últimos logs: ${recentes}. Quer ver mais detalhes?`;
+    }
+
+    extrairHashAssinatura(text) {
+        const match = String(text || '').match(/\b[a-f0-9]{64}\b/i);
+        return match ? match[0] : null;
+    }
+
+    async validarAssinatura(hash) {
+        try {
+            const pagamentos = (window.DMF_CONTEXT && window.DMF_CONTEXT.pagamentos) || [];
+            const match = pagamentos.find(p => p.assinatura && String(p.assinatura.hash) === hash);
+            const assinaturas = [
+                { id: 'abc123', nome: 'Carlos Silva', data: '2023-01-15', hora: '14:30', valido: true },
+                { id: 'def456', nome: 'Maria Oliveira', data: '2023-01-16', hora: '09:00', valido: true },
+                { id: 'ghi789', nome: 'João Souza', data: '2023-02-20', hora: '16:45', valido: false }
+            ];
+            if (!match) {
+                const local = assinaturas.find(a => a.id === hash);
+                if (!local || !local.valido) {
+                    this.addMessage('assistant', 'Assinatura Inválida.');
+                    return;
+                }
+                this.addMessage(
+                    'assistant',
+                    `Assinatura de: ${local.nome}\nData: ${local.data}\nHora: ${local.hora}\nID: Válido`
+                );
+                return;
+            }
+
+            const headers = (window.getAuthHeaders && window.getAuthHeaders()) || {};
+            const response = await fetch(`${getApiBase()}/api/signatures/verify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...headers
+                },
+                body: JSON.stringify({
+                    paymentId: match.id,
+                    userName: match.assinatura?.usuarioNome || '',
+                    dataISO: match.assinatura?.dataISO || '',
+                    valor: match.valor || '',
+                    centro: match.centro || '',
+                    hash: match.assinatura?.hash || ''
+                })
+            });
+
+            if (!response.ok) {
+                this.addMessage('assistant', 'Assinatura Inválida.');
+                return;
+            }
+
+            const data = await response.json();
+            if (!data.valid) {
+                this.addMessage('assistant', 'Assinatura Inválida.');
+                return;
+            }
+            const dataAssinatura = match.assinatura?.dataISO
+                ? new Date(match.assinatura.dataISO)
+                : null;
+            const dataStr = dataAssinatura ? dataAssinatura.toLocaleDateString('pt-BR') : '-';
+            const horaStr = dataAssinatura ? dataAssinatura.toLocaleTimeString('pt-BR') : '-';
+            this.addMessage(
+                'assistant',
+                `Assinatura de: ${match.assinatura?.usuarioNome || '-'}\nData: ${dataStr}\nHora: ${horaStr}\nID: Válido`
+            );
+        } catch (error) {
+            this.addMessage('assistant', 'Erro ao validar assinatura. Tente novamente.');
+        }
     }
 
     registrarPerguntaMemoria(pergunta, intencao) {
@@ -495,7 +714,7 @@ class IntelligentAssistant {
             m.frequencia > 2 && this.normalizeText(m.pergunta) === perguntaNorm
         );
         if (perguntaFrequente) {
-            return "Esta é uma pergunta frequente. " + this.gerarResposta(perguntaFrequente.intencao);
+            return "Esta é uma pergunta frequente. Posso ajudar com pagamentos, assinaturas, usuários e sistema. Diga 'ajudar' para ver opções.";
         }
 
         return "Não entendi completamente, mas posso ajudar com pagamentos, assinaturas, usuários e sistema. Tente perguntar de forma diferente ou diga 'ajudar' para ver opções.";

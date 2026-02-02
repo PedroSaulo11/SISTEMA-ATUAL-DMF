@@ -19,6 +19,7 @@ env_variables:
   AUTH_RATE_LIMIT_MAX: "50"
   DB_CONNECT_RETRIES: "10"
   DB_CONNECT_RETRY_DELAY_MS: "2000"
+  SIGNATURE_SECRET: "change-me"
 
 handlers:
 - url: /.*

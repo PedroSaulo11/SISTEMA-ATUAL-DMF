@@ -22,6 +22,13 @@ const {
   updateLastLogin,
   getServiceToken,
   upsertServiceToken,
+  listFlowPayments,
+  replaceFlowPayments,
+  upsertFlowPayment,
+  updateFlowPayment,
+  listFlowArchives,
+  createFlowArchive,
+  deleteFlowArchive,
   insertWebhook
 } = require('./db');
 
@@ -145,6 +152,7 @@ const CLIENT_SECRET = process.env.CONTA_AZUL_CLIENT_SECRET;
 const TOKEN_URL = process.env.CONTA_AZUL_TOKEN_URL;
 const CONTA_AZUL_API_BASE_URL = process.env.CONTA_AZUL_API_BASE_URL || 'https://api.contaazul.com';
 const CONTA_AZUL_PAYMENTS_PATH = process.env.CONTA_AZUL_PAYMENTS_PATH || '/v2/payments';
+const SIGNATURE_SECRET = process.env.SIGNATURE_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-signature-secret');
 
 // Cobli Configuration
 const COBLI_API_BASE_URL = process.env.COBLI_API_BASE_URL;
@@ -613,6 +621,152 @@ app.get('/api/payments', authenticateToken, authorizeRole('user'), async (req, r
   }
 });
 
+// Shared flow payments storage (local DB)
+app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const payments = await listFlowPayments();
+    res.json({ payments });
+  } catch (error) {
+    logger.error('Error listing flow payments', { error: error.message });
+    res.status(500).json({ error: 'Failed to list flow payments' });
+  }
+});
+
+app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const items = Array.isArray(req.body) ? req.body : (req.body?.payments || []);
+    const normalized = items.map(item => ({
+      id: String(item.id || crypto.randomUUID()),
+      fornecedor: item.fornecedor || 'N/A',
+      data: item.data || null,
+      descricao: item.descricao || '',
+      valor: Number(item.valor) || 0,
+      centro: item.centro || '',
+      categoria: item.categoria || '',
+      assinatura: item.assinatura || null,
+      created_at: new Date(),
+      updated_at: new Date()
+    }));
+    await replaceFlowPayments(normalized);
+    res.json({ success: true, count: normalized.length });
+  } catch (error) {
+    logger.error('Error importing flow payments', { error: error.message });
+    res.status(500).json({ error: 'Failed to import flow payments' });
+  }
+});
+
+app.post('/api/flow-payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const item = req.body || {};
+    const payment = {
+      id: String(item.id || crypto.randomUUID()),
+      fornecedor: item.fornecedor || 'N/A',
+      data: item.data || null,
+      descricao: item.descricao || '',
+      valor: Number(item.valor) || 0,
+      centro: item.centro || '',
+      categoria: item.categoria || '',
+      assinatura: item.assinatura || null,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    await upsertFlowPayment(payment);
+    res.json({ success: true, payment });
+  } catch (error) {
+    logger.error('Error creating flow payment', { error: error.message });
+    res.status(500).json({ error: 'Failed to create flow payment' });
+  }
+});
+
+app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const paymentId = req.params.id;
+    const assinatura = req.body?.assinatura || null;
+    const updated = await updateFlowPayment(paymentId, { assinatura });
+    res.json({ success: true, payment: updated });
+  } catch (error) {
+    logger.error('Error signing flow payment', { error: error.message });
+    res.status(500).json({ error: 'Failed to sign flow payment' });
+  }
+});
+
+// Archived flow snapshots
+app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const archives = await listFlowArchives();
+    res.json({ archives });
+  } catch (error) {
+    logger.error('Error listing flow archives', { error: error.message });
+    res.status(500).json({ error: 'Failed to list flow archives' });
+  }
+});
+
+app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const payments = await listFlowPayments();
+    if (!payments.length) {
+      return res.status(400).json({ error: 'Nenhum pagamento para arquivar.' });
+    }
+    const unsignedCount = payments.filter(p => !p.assinatura).length;
+    if (unsignedCount > 0) {
+      return res.status(400).json({
+        error: 'Existem pagamentos pendentes de assinatura.',
+        pending: unsignedCount
+      });
+    }
+    const now = new Date();
+    const labelDate = now.toLocaleDateString('pt-BR');
+    const displayName = (req.user?.name || req.user?.username || '').trim();
+    const label = displayName
+      ? `Fluxo de Pagamentos (${labelDate}) - ${displayName}`
+      : `Fluxo de Pagamentos (${labelDate})`;
+    const archive = await createFlowArchive({
+      id: crypto.randomUUID(),
+      label,
+      payments,
+      createdBy: req.user?.username || null,
+      count: payments.length
+    });
+    await replaceFlowPayments([]);
+    res.json({ success: true, archive });
+  } catch (error) {
+    logger.error('Error creating flow archive', { error: error.message });
+    res.status(500).json({ error: 'Failed to create flow archive' });
+  }
+});
+
+app.delete('/api/flow-archives/:id', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const archiveId = req.params.id;
+    const deleted = await deleteFlowArchive(archiveId);
+    res.json({ success: true, deleted: Number(deleted) || 0 });
+  } catch (error) {
+    logger.error('Error deleting flow archive', { error: error.message });
+    res.status(500).json({ error: 'Failed to delete flow archive' });
+  }
+});
+
 // Security: Protected route to sign a payment (requires gestor or admin)
 app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), [
   param('id').notEmpty().withMessage('Payment ID required'),
@@ -693,6 +847,49 @@ app.delete('/api/payments/:id', authenticateToken, authorizeRole('admin'), [
       data: error.response?.data || null
     });
     res.status(500).json({ error: 'Failed to remove payment flow' });
+  }
+});
+
+// Security: Generate signature hash (requires login)
+app.post('/api/signatures/hmac', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!SIGNATURE_SECRET) {
+      return res.status(500).json({ error: 'Signature secret not configured' });
+    }
+
+    const { paymentId, userName, dataISO, valor, centro } = req.body || {};
+    if (!paymentId || !userName || !dataISO) {
+      return res.status(400).json({ error: 'Missing signature fields' });
+    }
+
+    const payload = `${paymentId}|${userName}|${dataISO}|${valor || ''}|${centro || ''}`;
+    const hash = crypto.createHmac('sha256', SIGNATURE_SECRET).update(payload).digest('hex');
+    res.json({ hash });
+  } catch (error) {
+    logger.error('Signature hash error', { error: error.message });
+    res.status(500).json({ error: 'Failed to generate signature hash' });
+  }
+});
+
+// Security: Verify signature hash (requires login)
+app.post('/api/signatures/verify', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!SIGNATURE_SECRET) {
+      return res.status(500).json({ error: 'Signature secret not configured' });
+    }
+
+    const { paymentId, userName, dataISO, valor, centro, hash } = req.body || {};
+    if (!paymentId || !userName || !dataISO || !hash) {
+      return res.status(400).json({ error: 'Missing signature fields' });
+    }
+
+    const payload = `${paymentId}|${userName}|${dataISO}|${valor || ''}|${centro || ''}`;
+    const expected = crypto.createHmac('sha256', SIGNATURE_SECRET).update(payload).digest('hex');
+    const valid = expected === hash;
+    res.json({ valid });
+  } catch (error) {
+    logger.error('Signature verify error', { error: error.message });
+    res.status(500).json({ error: 'Failed to verify signature hash' });
   }
 });
 

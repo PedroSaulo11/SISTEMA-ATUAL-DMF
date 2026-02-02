@@ -39,6 +39,28 @@ const TokenModel = () => getSequelize().define('api_tokens', {
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const FlowPaymentModel = () => getSequelize().define('flow_payments', {
+  id: { type: DataTypes.TEXT, primaryKey: true },
+  fornecedor: { type: DataTypes.TEXT, allowNull: false },
+  data: { type: DataTypes.TEXT },
+  descricao: { type: DataTypes.TEXT },
+  valor: { type: DataTypes.DOUBLE },
+  centro: { type: DataTypes.TEXT },
+  categoria: { type: DataTypes.TEXT },
+  assinatura: { type: DataTypes.JSONB },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
+const FlowArchiveModel = () => getSequelize().define('flow_archives', {
+  id: { type: DataTypes.TEXT, primaryKey: true },
+  label: { type: DataTypes.TEXT, allowNull: false },
+  payments: { type: DataTypes.JSONB, allowNull: false },
+  created_by: { type: DataTypes.TEXT },
+  count: { type: DataTypes.INTEGER },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
 const WebhookModel = () => getSequelize().define('webhook_data', {
   id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
   source: { type: DataTypes.TEXT, allowNull: false },
@@ -58,6 +80,8 @@ async function initDb() {
       await db.authenticate();
       UserModel();
       TokenModel();
+      FlowPaymentModel();
+      FlowArchiveModel();
       WebhookModel();
       await db.sync();
       dbReady = true;
@@ -191,6 +215,59 @@ async function insertWebhook(source, payload, headers) {
   });
 }
 
+async function listFlowPayments() {
+  const Flow = FlowPaymentModel();
+  const rows = await Flow.findAll({ order: [['created_at', 'ASC']] });
+  return rows.map(r => r.toJSON());
+}
+
+async function replaceFlowPayments(payments) {
+  const Flow = FlowPaymentModel();
+  await Flow.destroy({ where: {}, truncate: true });
+  if (payments && payments.length) {
+    await Flow.bulkCreate(payments);
+  }
+}
+
+async function upsertFlowPayment(payment) {
+  const Flow = FlowPaymentModel();
+  await Flow.upsert({
+    ...payment,
+    updated_at: new Date()
+  });
+}
+
+async function updateFlowPayment(id, updates) {
+  const Flow = FlowPaymentModel();
+  await Flow.update({ ...updates, updated_at: new Date() }, { where: { id } });
+  const row = await Flow.findByPk(id);
+  return row ? row.toJSON() : null;
+}
+
+async function listFlowArchives() {
+  const Archive = FlowArchiveModel();
+  const rows = await Archive.findAll({ order: [['created_at', 'DESC']] });
+  return rows.map(r => r.toJSON());
+}
+
+async function createFlowArchive({ id, label, payments, createdBy, count }) {
+  const Archive = FlowArchiveModel();
+  const row = await Archive.create({
+    id,
+    label,
+    payments,
+    created_by: createdBy || null,
+    count: Number(count) || 0,
+    created_at: new Date(),
+  });
+  return row ? row.toJSON() : null;
+}
+
+async function deleteFlowArchive(id) {
+  const Archive = FlowArchiveModel();
+  return Archive.destroy({ where: { id } });
+}
+
 module.exports = {
   initDb,
   isDbReady,
@@ -204,5 +281,12 @@ module.exports = {
   updateLastLogin,
   getServiceToken,
   upsertServiceToken,
+  listFlowPayments,
+  replaceFlowPayments,
+  upsertFlowPayment,
+  updateFlowPayment,
+  listFlowArchives,
+  createFlowArchive,
+  deleteFlowArchive,
   insertWebhook,
 };

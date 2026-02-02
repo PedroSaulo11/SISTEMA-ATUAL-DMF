@@ -24,3 +24,25 @@ CREATE TABLE IF NOT EXISTS webhook_data (
   headers JSONB,
   received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS flow_payments (
+    id TEXT PRIMARY KEY,
+    fornecedor TEXT NOT NULL,
+    data TEXT,
+    descricao TEXT,
+    valor DOUBLE PRECISION,
+    centro TEXT,
+    categoria TEXT,
+    assinatura JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS flow_archives (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    payments JSONB NOT NULL,
+    created_by TEXT,
+    count INTEGER,
+    created_at TIMESTAMP DEFAULT NOW()
+);

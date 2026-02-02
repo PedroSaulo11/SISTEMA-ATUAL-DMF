@@ -62,27 +62,53 @@
                         <button id="btnClearPayments" class="btn btn-danger">Remover Todo Fluxo</button>
                         <button id="btnExportPayments" class="btn btn-ghost">Exportar XLSX</button>
                         <button id="btnImportPayments" class="btn btn-primary">Importar Conta Azul</button>
+                        <button id="btnRefreshPayments" class="btn btn-ghost">Recarregar do servidor</button>
                         <button id="btnAddPayment" class="btn btn-primary">Adicionar Pagamento</button> <!-- ALTERADO -->
                     </div>
                 </div>
+                <div id="flowSyncStatus" class="flow-sync-status">Sincronizando com o servidor...</div>
                 <input type="file" id="fileInput" accept=".xlsx" class="hidden">
                 
-                <div class="data-table-wrapper data-table-spaced">
-                    <table id="paymentsTable">
-                        <thead>
-                            <tr>
-                                <th>Fornecedor</th>
-                                <th>Data</th>
-                                <th>Descrição</th>
-                                <th>Valor</th>
-                                <th>Centro de Custo</th>
-                                <th>Status</th>
-                                <th>Assinatura</th>
-                                <th>Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody id="paymentsBody"></tbody>
-                    </table>
+                <div class="admin-tabs payments-tabs">
+                    <button class="tab-btn active" data-payments-tab="current">Fluxo Atual</button>
+                    <button class="tab-btn" data-payments-tab="history">Fluxos Anteriores</button>
+                </div>
+
+                <div id="paymentsCurrentTab" class="payments-tab-content">
+                    <div class="data-table-wrapper data-table-spaced">
+                        <table id="paymentsTable">
+                            <thead>
+                                <tr>
+                                    <th>Fornecedor</th>
+                                    <th>Data</th>
+                                    <th>Descrição</th>
+                                    <th>Valor</th>
+                                    <th>Centro de Custo</th>
+                                    <th>Categoria</th>
+                                    <th>Status</th>
+                                    <th>Assinatura</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody id="paymentsBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="companyTotals" class="company-totals">
+                        <div class="company-totals-header">Totais por Empresa</div>
+                        <div id="companyTotalsBody" class="company-totals-body"></div>
+                    </div>
+                </div>
+
+                <div id="paymentsHistoryTab" class="payments-tab-content hidden">
+                    <div class="flex-header">
+                        <h3>Fluxos Anteriores</h3>
+                        <div class="actions">
+                            <button id="btnArchiveFlow" class="btn btn-ghost">Enviar para Fluxos Anteriores</button>
+                            <button id="btnRefreshArchives" class="btn btn-ghost">Recarregar Fluxos</button>
+                        </div>
+                    </div>
+                    <div id="flowArchivesList" class="flow-archives-list"></div>
+                    <div id="flowArchiveDetail" class="flow-archive-detail"></div>
                 </div>
             </div>
         </section>
@@ -90,12 +116,28 @@
         <section id="audit" class="view hidden">
             <div class="card">
                 <h2>Histórico de Operações</h2>
-                <table id="auditLogTable">
-                    <thead>
-                        <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
-                    </thead>
-                    <tbody id="auditBody"></tbody>
-                </table>
+                <div class="admin-tabs audit-tabs">
+                    <button class="tab-btn active" data-audit-tab="logs">Logs</button>
+                    <button class="tab-btn" data-audit-tab="signature">Pesquisar Assinatura</button>
+                </div>
+                <div id="auditContent">
+                    <div id="auditLogsTab" class="audit-tab-content">
+                        <table id="auditLogTable">
+                            <thead>
+                                <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
+                            </thead>
+                            <tbody id="auditBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="auditSignatureTab" class="audit-tab-content hidden">
+                        <div class="form-group">
+                            <label for="signatureSearchInput">ID da Assinatura:</label>
+                            <input type="text" id="signatureSearchInput" class="styled-input" placeholder="Cole o ID da assinatura">
+                        </div>
+                        <button id="signatureSearchButton" class="btn btn-primary">Pesquisar</button>
+                        <div id="signatureSearchResult" class="signature-search-result"></div>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -200,10 +242,48 @@
             <div class="form-group">
                 <label>Permissões:</label>
                 <div class="permissions">
-                    <label><input type="checkbox" id="rolePermSignPayments"> Permitir que usuário faça assinatura de fluxo</label>
-                    <label><input type="checkbox" id="rolePermManageUsers"> Permitir que usuário possa gerenciar usuários</label>
-                    <label><input type="checkbox" id="rolePermViewAdmin"> Permitir que usuário veja a aba administração</label>
-                    <label><input type="checkbox" id="rolePermAccessAudit"> Permitir que usuário possa acessar Logs de Auditoria</label>
+                    <label>
+                        Usuário pode adicionar novos Pagamentos?
+                        <select id="rolePermAddPayments">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
+                    <label>
+                        Usuário pode assinar Fluxo de Pagamentos?
+                        <select id="rolePermSignPayments">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
+                    <label>
+                        Usuário Pode Ver a aba Administração?
+                        <select id="rolePermViewAdmin">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
+                    <label>
+                        Usuário pode Acessar a Aba Logs de Auditoria?
+                        <select id="rolePermAccessAudit">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
+                    <label>
+                        Usuário Pode Importar Fluxo de Pagamentos?
+                        <select id="rolePermImportPayments">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
+                    <label>
+                        Usuário Pode Exportar Fluxo de Pagamentos?
+                        <select id="rolePermExportPayments">
+                            <option value="no">Não</option>
+                            <option value="yes">Sim</option>
+                        </select>
+                    </label>
                 </div>
             </div>
             <button type="submit" class="btn btn-primary">Criar Cargo</button>
