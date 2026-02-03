@@ -29,6 +29,8 @@ const {
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
+  insertLoginAudit,
+  listLoginAudits,
   insertWebhook
 } = require('./db');
 
@@ -161,6 +163,38 @@ const COBLI_AUTH_HEADER = process.env.COBLI_AUTH_HEADER || 'Authorization';
 const COBLI_AUTH_SCHEME = process.env.COBLI_AUTH_SCHEME || 'Bearer';
 const COBLI_WEBHOOK_SECRET = process.env.COBLI_WEBHOOK_SECRET;
 const COBLI_WEBHOOK_SIGNATURE_HEADER = process.env.COBLI_WEBHOOK_SIGNATURE_HEADER;
+
+function computeChainHash({ prevHash, payment }) {
+  if (!SIGNATURE_SECRET) return null;
+  const payload = [
+    prevHash || '',
+    payment?.id || '',
+    payment?.assinatura?.hash || '',
+    String(payment?.valor ?? ''),
+    String(payment?.centro ?? ''),
+    payment?.assinatura?.dataISO || ''
+  ].join('|');
+  return crypto.createHmac('sha256', SIGNATURE_SECRET).update(payload).digest('hex');
+}
+
+function applyChainHashes(payments = []) {
+  const ordered = [...payments].sort((a, b) => {
+    const ad = new Date(a.created_at || 0).getTime();
+    const bd = new Date(b.created_at || 0).getTime();
+    if (ad !== bd) return ad - bd;
+    return String(a.id).localeCompare(String(b.id));
+  });
+  let prevHash = '';
+  return ordered.map(p => {
+    if (p && p.assinatura) {
+      const chainHash = computeChainHash({ prevHash, payment: p });
+      const assinatura = { ...p.assinatura, chain_hash: chainHash };
+      prevHash = chainHash || prevHash;
+      return { ...p, assinatura };
+    }
+    return p;
+  });
+}
 
 function buildCobliHeaders(extraHeaders = {}) {
   if (!COBLI_API_TOKEN) {
@@ -556,12 +590,28 @@ app.post('/api/auth/login', [
       user = await getUserByUsernameOrEmail(loginValue);
     }
     if (!user) {
+      if (isDbReady()) {
+        insertLoginAudit({
+          username: loginValue,
+          ip: req.ip,
+          success: false,
+          details: 'Usuario nao encontrado'
+        }).catch(() => {});
+      }
       logger.warn('Login attempt with non-existent user', { username });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
     if (!isValidPassword) {
+      if (isDbReady()) {
+        insertLoginAudit({
+          username: user.username,
+          ip: req.ip,
+          success: false,
+          details: 'Senha invalida'
+        }).catch(() => {});
+      }
       logger.warn('Login attempt with wrong password', { username });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -569,6 +619,12 @@ app.post('/api/auth/login', [
     // Update last login
     if (isDbReady()) {
       await updateLastLogin(user.id);
+      insertLoginAudit({
+        username: user.username,
+        ip: req.ip,
+        success: true,
+        details: 'Login ok'
+      }).catch(() => {});
     }
     user.last_login = new Date().toISOString();
 
@@ -576,7 +632,7 @@ app.post('/api/auth/login', [
     const token = jwt.sign(
       { id: user.id, username: user.username, email: user.email, role: user.role, name: user.name || null },
       JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '48h' }
     );
 
     logger.info('User logged in successfully', { username, role: user.role });
@@ -589,6 +645,19 @@ app.post('/api/auth/login', [
   } catch (error) {
     logger.error('Login error', { error: error.message });
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.get('/api/audit/logins', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const items = await listLoginAudits(200);
+    res.json({ items });
+  } catch (error) {
+    logger.error('Error listing login audits', { error: error.message });
+    res.status(500).json({ error: 'Failed to list login audits' });
   }
 });
 
@@ -695,7 +764,15 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
     const paymentId = req.params.id;
     const assinatura = req.body?.assinatura || null;
     const updated = await updateFlowPayment(paymentId, { assinatura });
-    res.json({ success: true, payment: updated });
+    const payments = await listFlowPayments();
+    const withChain = applyChainHashes(payments);
+    await Promise.all(
+      withChain
+        .filter(p => p?.assinatura?.chain_hash)
+        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }))
+    );
+    const refreshed = withChain.find(p => String(p.id) === String(paymentId)) || updated;
+    res.json({ success: true, payment: refreshed });
   } catch (error) {
     logger.error('Error signing flow payment', { error: error.message });
     res.status(500).json({ error: 'Failed to sign flow payment' });
@@ -709,7 +786,16 @@ app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), async (r
       return res.status(503).json({ error: 'Database not ready' });
     }
     const archives = await listFlowArchives();
-    res.json({ archives });
+    const start = req.query.start ? new Date(String(req.query.start)) : null;
+    const end = req.query.end ? new Date(String(req.query.end)) : null;
+    let filtered = archives;
+    if (start && !isNaN(start.getTime())) {
+      filtered = filtered.filter(a => new Date(a.created_at).getTime() >= start.getTime());
+    }
+    if (end && !isNaN(end.getTime())) {
+      filtered = filtered.filter(a => new Date(a.created_at).getTime() <= end.getTime());
+    }
+    res.json({ archives: filtered });
   } catch (error) {
     logger.error('Error listing flow archives', { error: error.message });
     res.status(500).json({ error: 'Failed to list flow archives' });
@@ -738,12 +824,18 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
     const label = displayName
       ? `Fluxo de Pagamentos (${labelDate}) - ${displayName}`
       : `Fluxo de Pagamentos (${labelDate})`;
+    const withChain = applyChainHashes(payments);
+    await Promise.all(
+      withChain
+        .filter(p => p?.assinatura?.chain_hash)
+        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }))
+    );
     const archive = await createFlowArchive({
       id: crypto.randomUUID(),
       label,
-      payments,
+      payments: withChain,
       createdBy: req.user?.username || null,
-      count: payments.length
+      count: withChain.length
     });
     await replaceFlowPayments([]);
     res.json({ success: true, archive });
@@ -890,6 +982,54 @@ app.post('/api/signatures/verify', authenticateToken, authorizeRole('user'), asy
   } catch (error) {
     logger.error('Signature verify error', { error: error.message });
     res.status(500).json({ error: 'Failed to verify signature hash' });
+  }
+});
+
+// Public signature verification (no auth)
+app.get('/api/public/signatures/:hash', async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const hash = String(req.params.hash || '').trim();
+    if (!hash) {
+      return res.status(400).json({ error: 'Signature hash required' });
+    }
+
+    const checkSet = (payments, sourceLabel, sourceType) => {
+      const computed = applyChainHashes(payments || []);
+      const found = computed.find(p => p?.assinatura?.hash === hash);
+      if (!found) return null;
+      const original = (payments || []).find(p => String(p.id) === String(found.id));
+      const storedChain = original?.assinatura?.chain_hash || null;
+      const chainValid = storedChain ? storedChain === found.assinatura.chain_hash : true;
+      return {
+        valid: true,
+        nome: found.assinatura?.usuarioNome || null,
+        dataISO: found.assinatura?.dataISO || null,
+        hash,
+        chainValid,
+        source: { type: sourceType, label: sourceLabel }
+      };
+    };
+
+    const current = await listFlowPayments();
+    let result = checkSet(current, 'Fluxo Atual', 'current');
+    if (!result) {
+      const archives = await listFlowArchives();
+      for (const archive of archives) {
+        result = checkSet(archive?.payments || [], archive?.label || 'Fluxo Arquivado', 'archive');
+        if (result) break;
+      }
+    }
+
+    if (!result) {
+      return res.status(404).json({ valid: false, error: 'Assinatura invalida' });
+    }
+    res.json(result);
+  } catch (error) {
+    logger.error('Error verifying public signature', { error: error.message });
+    res.status(500).json({ error: 'Failed to verify signature' });
   }
 });
 

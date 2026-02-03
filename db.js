@@ -69,6 +69,15 @@ const WebhookModel = () => getSequelize().define('webhook_data', {
   received_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const LoginAuditModel = () => getSequelize().define('audit_logins', {
+  id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
+  username: { type: DataTypes.TEXT },
+  ip: { type: DataTypes.TEXT },
+  success: { type: DataTypes.BOOLEAN, defaultValue: false },
+  details: { type: DataTypes.TEXT },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
 async function initDb() {
   const db = getSequelize();
   const maxAttempts = Number(process.env.DB_CONNECT_RETRIES || 5);
@@ -82,6 +91,7 @@ async function initDb() {
       TokenModel();
       FlowPaymentModel();
       FlowArchiveModel();
+      LoginAuditModel();
       WebhookModel();
       await db.sync();
       dbReady = true;
@@ -215,6 +225,26 @@ async function insertWebhook(source, payload, headers) {
   });
 }
 
+async function insertLoginAudit({ username, ip, success, details }) {
+  const Audit = LoginAuditModel();
+  await Audit.create({
+    username: username || null,
+    ip: ip || null,
+    success: !!success,
+    details: details || null,
+    created_at: new Date()
+  });
+}
+
+async function listLoginAudits(limit = 200) {
+  const Audit = LoginAuditModel();
+  const rows = await Audit.findAll({
+    order: [['created_at', 'DESC']],
+    limit
+  });
+  return rows.map(r => r.toJSON());
+}
+
 async function listFlowPayments() {
   const Flow = FlowPaymentModel();
   const rows = await Flow.findAll({ order: [['created_at', 'ASC']] });
@@ -288,5 +318,7 @@ module.exports = {
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
+  insertLoginAudit,
+  listLoginAudits,
   insertWebhook,
 };

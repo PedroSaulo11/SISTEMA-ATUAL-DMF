@@ -46,3 +46,12 @@ CREATE TABLE IF NOT EXISTS flow_archives (
     count INTEGER,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS audit_logins (
+    id BIGSERIAL PRIMARY KEY,
+    username TEXT,
+    ip TEXT,
+    success BOOLEAN DEFAULT FALSE,
+    details TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

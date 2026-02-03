@@ -68,6 +68,150 @@ function formatTimeNow() {
     return now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function setBackendStatus(message, tone = 'info') {
+    const el = document.getElementById('backendStatus');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+    const toneClass = `is-${tone}`;
+    el.classList.add(toneClass);
+}
+
+function parseJwtPayload(token) {
+    try {
+        const payload = token.split('.')[1];
+        const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const decoded = atob(normalized);
+        return JSON.parse(decoded);
+    } catch (_) {
+        return null;
+    }
+}
+
+class SyncManager {
+    constructor(core) {
+        this.core = core;
+        this.queueKey = 'dmf_sync_queue';
+        this.queue = this.loadQueue();
+        this.processing = false;
+        this.timer = null;
+        this.start();
+    }
+
+    loadQueue() {
+        try {
+            const raw = localStorage.getItem(this.queueKey);
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    saveQueue() {
+        localStorage.setItem(this.queueKey, JSON.stringify(this.queue));
+    }
+
+    enqueue(item) {
+        const payload = {
+            id: `${Date.now()}-${Math.random()}`,
+            type: item.type,
+            data: item.data || null,
+            tries: 0,
+            nextAt: Date.now()
+        };
+        this.queue.push(payload);
+        this.saveQueue();
+        this.kick();
+    }
+
+    kick() {
+        if (!this.timer) {
+            this.timer = setTimeout(() => this.processQueue(), 1000);
+        }
+    }
+
+    start() {
+        this.kick();
+        setInterval(() => this.processQueue(), 10000);
+    }
+
+    async processQueue() {
+        if (this.processing) return;
+        this.processing = true;
+        try {
+            const now = Date.now();
+            const readyIndex = this.queue.findIndex(item => item.nextAt <= now);
+            if (readyIndex === -1) {
+                return;
+            }
+            const item = this.queue[readyIndex];
+            const ok = await this.execute(item);
+            if (ok) {
+                this.queue.splice(readyIndex, 1);
+                this.saveQueue();
+            } else {
+                item.tries += 1;
+                const backoff = Math.min(60000, 2000 * Math.pow(2, item.tries));
+                item.nextAt = Date.now() + backoff;
+                this.queue[readyIndex] = item;
+                this.saveQueue();
+            }
+        } finally {
+            this.processing = false;
+            if (this.timer) {
+                clearTimeout(this.timer);
+                this.timer = null;
+            }
+        }
+    }
+
+    async execute(item) {
+        const token = localStorage.getItem('dmf_api_token');
+        if (!token) return false;
+        try {
+            if (item.type === 'import') {
+                const records = this.core.data.records || [];
+                const response = await fetch(`${getApiBase()}/api/flow-payments/import`, {
+                    method: 'POST',
+                    cache: 'no-store',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...getAuthHeaders()
+                    },
+                    body: JSON.stringify(records)
+                });
+                return response.ok;
+            }
+            if (item.type === 'upsert') {
+                const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+                    method: 'POST',
+                    cache: 'no-store',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...getAuthHeaders()
+                    },
+                    body: JSON.stringify(item.data)
+                });
+                return response.ok;
+            }
+            if (item.type === 'sign') {
+                const response = await fetch(`${getApiBase()}/api/flow-payments/${item.data.id}/sign`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...getAuthHeaders()
+                    },
+                    body: JSON.stringify({ assinatura: item.data.assinatura })
+                });
+                return response.ok;
+            }
+        } catch (error) {
+            console.warn('Sync queue execute failed:', error.message);
+        }
+        return false;
+    }
+}
+
 class DMFSystem {
     constructor() {
         this.storageKeys = {
@@ -83,6 +227,7 @@ class DMFSystem {
     }
 
     init() {
+        this.sync = new SyncManager(this);
         this.data = new DataProcessor(this);
         this.auth = new AuthManager(this);
         this.ui = new UIManager(this);
@@ -189,6 +334,52 @@ class DataProcessor {
         console.log('DMF_BRAIN after DataProcessor init:', window.DMF_BRAIN);
     }
 
+    parsePaymentDate(value) {
+        if (!value) return null;
+        if (value instanceof Date) return value;
+        const raw = String(value).trim();
+        if (!raw || raw.toLowerCase() === 'pendente') return null;
+        const iso = new Date(raw);
+        if (!isNaN(iso.getTime())) return iso;
+        const match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (match) {
+            const [_, dd, mm, yyyy] = match;
+            const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+            return isNaN(d.getTime()) ? null : d;
+        }
+        return null;
+    }
+
+    getPaymentsByMonth(monthKey) {
+        const target = String(monthKey || '').trim();
+        if (!target) return [...(this.records || [])];
+        return (this.records || []).filter(p => {
+            const d = this.parsePaymentDate(p.data);
+            if (!d) return false;
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            return key === target;
+        });
+    }
+
+    getCompanyTotalsForMonth(monthKey) {
+        const original = this.records;
+        const filtered = this.getPaymentsByMonth(monthKey);
+        this.records = filtered;
+        const totals = this.getCompanyTotals();
+        this.records = original;
+        return totals;
+    }
+
+    getCostCenterTotalsForMonth(monthKey) {
+        const filtered = this.getPaymentsByMonth(monthKey);
+        const totals = {};
+        filtered.forEach(p => {
+            const key = String(p.centro || 'Geral').trim() || 'Geral';
+            totals[key] = (totals[key] || 0) + Math.abs(Number(p.valor) || 0);
+        });
+        return totals;
+    }
+
     async loadFromBackend() {
         setFlowSyncStatus('Sincronizando com o servidor...', 'info');
         try {
@@ -236,9 +427,12 @@ class DataProcessor {
         }
     }
 
-    async loadArchivesFromBackend() {
+    async loadArchivesFromBackend(filters = {}) {
         try {
-            const response = await fetch(`${getApiBase()}/api/flow-archives`, {
+            const params = new URLSearchParams();
+            if (filters.start) params.set('start', filters.start);
+            if (filters.end) params.set('end', filters.end);
+            const response = await fetch(`${getApiBase()}/api/flow-archives${params.toString() ? `?${params}` : ''}`, {
                 cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
@@ -314,6 +508,46 @@ class DataProcessor {
             alert('Falha ao excluir o fluxo anterior.');
             return false;
         }
+    }
+
+    exportArchive(archive) {
+        if (!archive) return;
+        if (!this.core.admin.hasPermission(this.core.currentUser, 'export_archives') &&
+            !this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
+            alert('Você não tem permissão para exportar fluxos anteriores.');
+            return;
+        }
+        const payments = Array.isArray(archive.payments) ? archive.payments : [];
+        const header = [
+            'Fornecedor',
+            'Data',
+            'Descrição',
+            'Valor',
+            'Centro de Custo',
+            'Categoria',
+            'Status',
+            'Assinatura',
+            'ID da Assinatura'
+        ];
+        const rows = payments.map(p => ([
+            p.fornecedor,
+            p.data,
+            p.descricao || "",
+            p.valor,
+            p.centro,
+            p.categoria || "",
+            p.assinatura ? 'Assinado' : 'Pendente',
+            p.assinatura
+                ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')}`
+                : '-',
+            p.assinatura?.hash || '-'
+        ]));
+        const aoa = [header, ...rows];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Fluxo Arquivado");
+        const safeLabel = String(archive.label || 'Fluxo_Arquivado').replace(/[\\/:*?"<>|]/g, '-');
+        XLSX.writeFile(wb, `${safeLabel}.xlsx`);
     }
 
     import(input) {
@@ -464,6 +698,7 @@ class DataProcessor {
             });
         } catch (error) {
             console.warn('Flow payment sign sync failed:', error.message);
+            this.core.sync.enqueue({ type: 'sign', data: { id, assinatura: r.assinatura } });
         }
 
         try { // manter telemetria/contexto, sem quebrar se não existir
@@ -511,12 +746,14 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar importação.', 'error');
                 }
+                this.core.sync.enqueue({ type: 'import' });
                 return;
             }
             setFlowSyncStatus(`Importação sincronizada às ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payments import unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível para importação.', 'error');
+            this.core.sync.enqueue({ type: 'import' });
         }
     }
 
@@ -718,12 +955,14 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar pagamento.', 'error');
                 }
+                this.core.sync.enqueue({ type: 'upsert', data: record });
                 return;
             }
             setFlowSyncStatus(`Pagamento sincronizado às ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payment create unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível para pagamento.', 'error');
+            this.core.sync.enqueue({ type: 'upsert', data: record });
         }
     }
 
@@ -893,10 +1132,138 @@ class UIManager {
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();
+            this.renderMonthlyReports();
         });
+        this.startBackendStatusMonitor();
+        this.startSessionMonitor();
         this.renderAdminContent();
         this.applyRolePermissions();
+        this.populateBudgetInputs();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
+    }
+
+    startBackendStatusMonitor() {
+        if (this.backendStatusTimer) return;
+        const check = async () => {
+            try {
+                const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...getAuthHeaders()
+                    }
+                });
+                if (response.status === 401 || response.status === 403) {
+                    setBackendStatus('Servidor: sessão expirada', 'warn');
+                    return;
+                }
+                if (response.ok) {
+                    setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
+                } else {
+                    setBackendStatus('Servidor: indisponível', 'error');
+                }
+            } catch (_) {
+                setBackendStatus('Servidor: indisponível', 'error');
+            }
+        };
+        check();
+        this.backendStatusTimer = setInterval(check, 30000);
+    }
+
+    startSessionMonitor() {
+        if (this.sessionStatusTimer) return;
+        const update = () => {
+            const token = localStorage.getItem('dmf_api_token');
+            if (!token) {
+                setBackendStatus('Servidor: offline', 'error');
+                const el = document.getElementById('sessionStatus');
+                if (el) {
+                    el.textContent = 'Sessão: offline';
+                    el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+                    el.classList.add('is-error');
+                }
+                return;
+            }
+            const payload = parseJwtPayload(token);
+            const el = document.getElementById('sessionStatus');
+            if (!el) return;
+            if (!payload?.exp) {
+                el.textContent = 'Sessão: ativa';
+                el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+                el.classList.add('is-ok');
+                return;
+            }
+            const expMs = payload.exp * 1000;
+            const remaining = expMs - Date.now();
+            if (remaining <= 0) {
+                el.textContent = 'Sessão: expirada';
+                el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+                el.classList.add('is-error');
+                return;
+            }
+            const minutes = Math.floor(remaining / 60000);
+            const seconds = Math.floor((remaining % 60000) / 1000);
+            el.textContent = `Sessão: expira em ${minutes}m ${seconds}s`;
+            el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
+            if (minutes < 5) {
+                el.classList.add('is-warn');
+            } else {
+                el.classList.add('is-ok');
+            }
+        };
+        update();
+        this.sessionStatusTimer = setInterval(update, 1000);
+        if (!this.userSyncTimer) {
+            this.userSyncTimer = setInterval(() => {
+                this.syncCurrentUserRole();
+            }, 10000);
+        }
+    }
+
+    async syncCurrentUserRole() {
+        try {
+            const response = await fetch(`${getApiBase()}/api/auth/user-status`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            const apiUser = data?.user;
+            if (!apiUser || !this.core.currentUser) return;
+            const newRole = normalizeRole(apiUser.role);
+            if (newRole && newRole !== this.core.currentUser.cargo) {
+                this.core.currentUser.cargo = newRole;
+                localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(this.core.currentUser));
+                const badge = document.getElementById('userRoleBadge');
+                if (badge) badge.innerText = newRole.toUpperCase();
+                this.applyRolePermissions();
+                this.enforceViewAccess();
+            }
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    enforceViewAccess() {
+        const currentView = document.querySelector('.view:not(.hidden)')?.id;
+        const isAdminAccess = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const canAudit = this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
+        if (currentView === 'admin' && !isAdminAccess) {
+            this.navigate('dashboard', document.querySelector('[data-nav="dashboard"]'));
+        }
+        if (currentView === 'audit' && !canAudit) {
+            this.navigate('dashboard', document.querySelector('[data-nav="dashboard"]'));
+        }
+        const historyBtn = document.querySelector('[data-payments-tab="history"]');
+        if (historyBtn && historyBtn.classList.contains('active') &&
+            !this.core.admin.hasPermission(this.core.currentUser, 'view_archives')) {
+            const currentBtn = document.querySelector('[data-payments-tab="current"]');
+            this.switchPaymentsTab('current', currentBtn);
+        }
     }
 
     startFlowAutoRefresh() {
@@ -940,12 +1307,24 @@ class UIManager {
         document.querySelectorAll('[data-audit-tab]').forEach(b => b.classList.remove('active'));
         document.getElementById(`audit${tab.charAt(0).toUpperCase()}${tab.slice(1)}Tab`).classList.remove('hidden');
         if (activeButton) activeButton.classList.add('active');
+
+        if (tab === 'logins') {
+            if (!this.core.admin.hasPermission(this.core.currentUser, 'audit_login_access')) {
+                alert('Acesso restrito aos logs de acesso.');
+                return;
+            }
+            this.loadLoginAudits();
+        }
     }
 
     switchPaymentsTab(tab, activeButton = null) {
         document.querySelectorAll('.payments-tab-content').forEach(t => t.classList.add('hidden'));
         document.querySelectorAll('[data-payments-tab]').forEach(b => b.classList.remove('active'));
         const target = tab === 'history' ? 'paymentsHistoryTab' : 'paymentsCurrentTab';
+        if (tab === 'history' && !this.core.admin.hasPermission(this.core.currentUser, 'view_archives')) {
+            alert('Acesso restrito aos fluxos anteriores.');
+            return;
+        }
         document.getElementById(target).classList.remove('hidden');
         if (activeButton) activeButton.classList.add('active');
 
@@ -979,11 +1358,18 @@ class UIManager {
         const addPaymentBtn = document.getElementById('btnAddPayment');
         const auditNavBtn = document.querySelector('[data-nav="audit"]');
         const archiveBtn = document.getElementById('btnArchiveFlow');
+        const paymentsHistoryTabBtn = document.querySelector('[data-payments-tab="history"]');
+        const archiveFilterArea = document.querySelector('.archive-filters');
+        const archiveCompareArea = document.querySelector('.archive-compare');
+        const compareBtn = document.getElementById('btnCompareArchives');
 
         const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
         const canAdd = this.core.admin.hasPermission(this.core.currentUser, 'add_payments');
         const canAudit = this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
+        const canViewArchives = this.core.admin.hasPermission(this.core.currentUser, 'view_archives');
+        const canArchiveFlow = this.core.admin.hasPermission(this.core.currentUser, 'archive_flow');
+        const canCompareArchives = this.core.admin.hasPermission(this.core.currentUser, 'compare_archives');
 
         if (importBtn) {
             importBtn.classList.toggle('hidden', !canImport);
@@ -998,11 +1384,24 @@ class UIManager {
             addPaymentBtn.disabled = !canAdd;
         }
         if (archiveBtn) {
-            archiveBtn.classList.toggle('hidden', !isAdminAccess);
-            archiveBtn.disabled = !isAdminAccess;
+            archiveBtn.classList.toggle('hidden', !canArchiveFlow);
+            archiveBtn.disabled = !canArchiveFlow;
         }
         if (auditNavBtn) {
             auditNavBtn.classList.toggle('hidden', !canAudit);
+        }
+        if (paymentsHistoryTabBtn) {
+            paymentsHistoryTabBtn.classList.toggle('hidden', !canViewArchives);
+            paymentsHistoryTabBtn.disabled = !canViewArchives;
+        }
+        if (archiveFilterArea) {
+            archiveFilterArea.classList.toggle('hidden', !canViewArchives);
+        }
+        if (archiveCompareArea) {
+            archiveCompareArea.classList.toggle('hidden', !canViewArchives);
+        }
+        if (compareBtn) {
+            compareBtn.disabled = !canCompareArchives;
         }
     }
 
@@ -1092,6 +1491,89 @@ class UIManager {
         }
     }
 
+    getSelectedReportMonth() {
+        const input = document.getElementById('reportMonth');
+        if (input && input.value) return input.value;
+        const now = new Date();
+        const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        if (input) input.value = key;
+        return key;
+    }
+
+    loadBudgets() {
+        try {
+            const raw = localStorage.getItem('dmf_budget_limits');
+            return raw ? JSON.parse(raw) : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    saveBudgets(budgets) {
+        localStorage.setItem('dmf_budget_limits', JSON.stringify(budgets || {}));
+    }
+
+    renderMonthlyReports() {
+        const monthKey = this.getSelectedReportMonth();
+        const companyTotals = this.core.data.getCompanyTotalsForMonth(monthKey);
+        const costTotals = this.core.data.getCostCenterTotalsForMonth(monthKey);
+        const companyList = document.getElementById('reportCompanyTotals');
+        const costList = document.getElementById('reportCostCenters');
+        if (companyList) {
+            const items = Object.entries(companyTotals).map(([name, value]) => `
+                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
+            `).join('');
+            companyList.innerHTML = items || '<div>Nenhum dado no período.</div>';
+        }
+        if (costList) {
+            const sorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 8);
+            const items = sorted.map(([name, value]) => `
+                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
+            `).join('');
+            costList.innerHTML = items || '<div>Nenhum dado no período.</div>';
+        }
+
+        const budgets = this.loadBudgets();
+        const budgetDMF = Number(budgets.DMF) || 0;
+        const budgetJFX = Number(budgets.JFX) || 0;
+        const budgetReal = Number(budgets['Real Energy']) || 0;
+        const alerts = [];
+        if (budgetDMF > 0 && companyTotals.DMF > budgetDMF) {
+            alerts.push(`DMF excedeu o orçamento: R$ ${companyTotals.DMF.toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
+        }
+        if (budgetJFX > 0 && companyTotals.JFX > budgetJFX) {
+            alerts.push(`JFX excedeu o orçamento: R$ ${companyTotals.JFX.toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
+        }
+        if (budgetReal > 0 && companyTotals['Real Energy'] > budgetReal) {
+            alerts.push(`Real Energy excedeu o orçamento: R$ ${companyTotals['Real Energy'].toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
+        }
+        const alertBox = document.getElementById('budgetAlerts');
+        if (alertBox) {
+            if (alerts.length) {
+                alertBox.classList.remove('ok');
+                alertBox.innerHTML = alerts.map(a => `<div>${a}</div>`).join('');
+            } else {
+                alertBox.classList.add('ok');
+                alertBox.textContent = 'Dentro do orçamento configurado.';
+            }
+        }
+    }
+
+    populateBudgetInputs() {
+        const budgets = this.loadBudgets();
+        const dmf = document.getElementById('budgetDMF');
+        const jfx = document.getElementById('budgetJFX');
+        const real = document.getElementById('budgetReal');
+        if (dmf) dmf.value = Number(budgets.DMF || 0) || '';
+        if (jfx) jfx.value = Number(budgets.JFX || 0) || '';
+        if (real) real.value = Number(budgets['Real Energy'] || 0) || '';
+        const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const budgetSection = document.getElementById('budgetSection');
+        if (budgetSection) {
+            budgetSection.classList.toggle('hidden', !isAdmin);
+        }
+    }
+
     renderFlowArchivesList() {
         const list = document.getElementById('flowArchivesList');
         if (!list) return;
@@ -1100,11 +1582,13 @@ class UIManager {
             list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponível.</div>`;
             const detail = document.getElementById('flowArchiveDetail');
             if (detail) detail.innerHTML = '';
+            this.renderArchiveCompareOptions([]);
             return;
         }
         list.innerHTML = archives.map(a => `
             <button class="flow-archive-item" data-archive-id="${a.id}">${a.label}</button>
         `).join('');
+        this.renderArchiveCompareOptions(archives);
 
         if (!list.dataset.boundArchiveClick) {
             list.addEventListener('click', (event) => {
@@ -1128,6 +1612,55 @@ class UIManager {
         }
     }
 
+    renderArchiveCompareOptions(archives) {
+        const selectA = document.getElementById('archiveCompareA');
+        const selectB = document.getElementById('archiveCompareB');
+        if (!selectA || !selectB) return;
+        const options = archives.map(a => `<option value="${a.id}">${a.label}</option>`).join('');
+        selectA.innerHTML = options;
+        selectB.innerHTML = options;
+        if (selectA.options.length > 1) {
+            selectA.selectedIndex = 0;
+            selectB.selectedIndex = 1;
+        }
+        const result = document.getElementById('archiveCompareResult');
+        if (result) result.textContent = '';
+    }
+
+    computeArchiveStats(archive) {
+        const payments = Array.isArray(archive?.payments) ? archive.payments : [];
+        const total = payments.reduce((sum, p) => sum + Math.abs(Number(p.valor) || 0), 0);
+        const signed = payments.filter(p => p.assinatura).length;
+        return {
+            total,
+            count: payments.length,
+            signed
+        };
+    }
+
+    compareArchives(a, b) {
+        const result = document.getElementById('archiveCompareResult');
+        if (!result) return;
+        if (!a || !b) {
+            result.textContent = 'Selecione dois fluxos para comparar.';
+            return;
+        }
+        const statsA = this.computeArchiveStats(a);
+        const statsB = this.computeArchiveStats(b);
+        const deltaTotal = statsB.total - statsA.total;
+        const deltaCount = statsB.count - statsA.count;
+        const deltaSigned = statsB.signed - statsA.signed;
+        result.innerHTML = `
+            <strong>Comparação</strong><br>
+            A: ${a.label}<br>
+            B: ${b.label}<br><br>
+            Total A: R$ ${statsA.total.toLocaleString('pt-BR')}<br>
+            Total B: R$ ${statsB.total.toLocaleString('pt-BR')}<br>
+            Diferença Total (B - A): R$ ${deltaTotal.toLocaleString('pt-BR')}<br><br>
+            Registros A: ${statsA.count} | B: ${statsB.count} | Diferença: ${deltaCount}<br>
+            Assinados A: ${statsA.signed} | B: ${statsB.signed} | Diferença: ${deltaSigned}
+        `;
+    }
     renderFlowArchiveDetail(archive) {
         const detail = document.getElementById('flowArchiveDetail');
         if (!detail) return;
@@ -1135,7 +1668,9 @@ class UIManager {
             detail.innerHTML = '';
             return;
         }
-        const canDelete = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const canDelete = this.core.admin.hasPermission(this.core.currentUser, 'delete_archive');
+        const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_archives') ||
+            this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
         const payments = Array.isArray(archive.payments) ? archive.payments : [];
         const rows = payments.map(p => `
             <tr>
@@ -1154,7 +1689,10 @@ class UIManager {
         detail.innerHTML = `
             <div class="flex-header">
                 <strong>${archive.label}</strong>
-                ${canDelete ? `<button class="btn btn-danger" data-archive-delete="${archive.id}">Excluir</button>` : ''}
+                <div class="actions">
+                    ${canExport ? `<button class="btn btn-ghost" data-archive-export="${archive.id}">Exportar XLSX</button>` : ''}
+                    ${canDelete ? `<button class="btn btn-danger" data-archive-delete="${archive.id}">Excluir</button>` : ''}
+                </div>
             </div>
             <div class="data-table-wrapper data-table-spaced">
                 <table>
@@ -1175,6 +1713,46 @@ class UIManager {
                 </table>
             </div>
         `;
+    }
+
+    async loadLoginAudits() {
+        const body = document.getElementById('auditLoginsBody');
+        if (!body) return;
+        body.innerHTML = `<tr><td colspan="5">Carregando...</td></tr>`;
+        try {
+            const response = await fetch(`${getApiBase()}/api/audit/logins`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                body.innerHTML = `<tr><td colspan="5">Falha ao carregar acessos.</td></tr>`;
+                return;
+            }
+            const data = await response.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            if (!items.length) {
+                body.innerHTML = `<tr><td colspan="5">Nenhum acesso registrado.</td></tr>`;
+                return;
+            }
+            body.innerHTML = items.map(item => {
+                const date = item.created_at ? new Date(item.created_at).toLocaleString('pt-BR') : '-';
+                const status = item.success ? 'Sucesso' : 'Falha';
+                return `
+                    <tr>
+                        <td>${date}</td>
+                        <td>${item.username || '-'}</td>
+                        <td>${item.ip || '-'}</td>
+                        <td>${status}</td>
+                        <td>${item.details || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (error) {
+            body.innerHTML = `<tr><td colspan="5">Erro ao carregar acessos.</td></tr>`;
+        }
     }
 
     openCreateUserModal() {
@@ -1325,6 +1903,10 @@ class UIManager {
         const body = document.getElementById('paymentsBody');
         if (!body) return;
 
+        const canSeeQr = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments') ||
+            this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const publicBase = `${getApiBase()}/api/public/signatures/`;
+
         body.innerHTML = this.core.data.records.map(p => {
             const assinaturaStr = p.assinatura
                 ? `Assinado por: ${p.assinatura.usuarioNome}` // ALTERADO
@@ -1334,6 +1916,9 @@ class UIManager {
             const acoesHtml = p.assinatura
                 ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
                 : (canSign ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
+            const qrHtml = (canSeeQr && p.assinatura?.hash)
+                ? `<div class="qr-box" data-qr="${publicBase}${p.assinatura.hash}"></div>`
+                : '';
 
             return `
                 <tr>
@@ -1344,7 +1929,7 @@ class UIManager {
                     <td>${p.centro || ''}</td>
                     <td>${(p.categoria || '').trim() || '—'}</td>
                     <td><span>${p.assinatura ? 'Assinado' : 'Pendente'}</span></td>
-                    <td><small>${assinaturaStr}</small></td>
+                    <td><small>${assinaturaStr}</small>${qrHtml}</td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
                 </tr>
             `;
@@ -1352,6 +1937,7 @@ class UIManager {
 
         this.updateStats && this.updateStats(); // manter comportamento existente // ALTERADO
         this.renderCompanyTotals && this.renderCompanyTotals();
+        this.renderSignatureQrCodes && this.renderSignatureQrCodes();
 
         if (!body.dataset.boundPayments) {
             body.addEventListener('click', (event) => {
@@ -1365,6 +1951,20 @@ class UIManager {
             });
             body.dataset.boundPayments = 'true';
         }
+    }
+
+    renderSignatureQrCodes() {
+        if (!window.QRCode) return;
+        document.querySelectorAll('.qr-box').forEach(box => {
+            if (box.dataset.rendered) return;
+            const text = box.getAttribute('data-qr');
+            if (!text) return;
+            window.QRCode.toCanvas(document.createElement('canvas'), text, { width: 96 }, (err, canvas) => {
+                if (err) return;
+                box.appendChild(canvas);
+                box.dataset.rendered = 'true';
+            });
+        });
     }
 
     updateStats() {
@@ -1882,6 +2482,15 @@ class AdminManager {
             return;
         }
 
+        if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
+            this.core.currentUser.cargo = apiUpdated?.role || normalizedUpdates.cargo || this.core.currentUser.cargo;
+            localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(this.core.currentUser));
+            const badge = document.getElementById('userRoleBadge');
+            if (badge) badge.innerText = String(this.core.currentUser.cargo || '').toUpperCase();
+            this.core.ui.applyRolePermissions();
+            this.core.ui.enforceViewAccess();
+        }
+
         Object.assign(user, {
             ...normalizedUpdates,
             usuario: apiUpdated?.username || normalizedUpdates.usuario || user.usuario,
@@ -1985,6 +2594,12 @@ class AdminManager {
         const accessAudit = document.getElementById('rolePermAccessAudit')?.value === 'yes';
         const importPayments = document.getElementById('rolePermImportPayments')?.value === 'yes';
         const exportPayments = document.getElementById('rolePermExportPayments')?.value === 'yes';
+        const viewArchives = document.getElementById('rolePermViewArchives')?.value === 'yes';
+        const archiveFlow = document.getElementById('rolePermArchiveFlow')?.value === 'yes';
+        const deleteArchive = document.getElementById('rolePermDeleteArchive')?.value === 'yes';
+        const exportArchive = document.getElementById('rolePermExportArchive')?.value === 'yes';
+        const compareArchives = document.getElementById('rolePermCompareArchives')?.value === 'yes';
+        const auditLogin = document.getElementById('rolePermAuditLogin')?.value === 'yes';
 
         if (addPayments) permissions.push('add_payments');
         if (signPayments) permissions.push('sign_payments');
@@ -1992,6 +2607,12 @@ class AdminManager {
         if (accessAudit) permissions.push('audit_access');
         if (importPayments) permissions.push('import_payments');
         if (exportPayments) permissions.push('export_payments');
+        if (viewArchives) permissions.push('view_archives');
+        if (archiveFlow) permissions.push('archive_flow');
+        if (deleteArchive) permissions.push('delete_archive');
+        if (exportArchive) permissions.push('export_archives');
+        if (compareArchives) permissions.push('compare_archives');
+        if (auditLogin) permissions.push('audit_login_access');
 
         if (!name) {
             alert('Por favor, preencha o nome do cargo.');
@@ -2471,6 +3092,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const archiveFlowButton = document.getElementById('btnArchiveFlow');
     if (archiveFlowButton) {
         archiveFlowButton.addEventListener('click', function () {
+            if (!system?.admin?.hasPermission?.(system?.currentUser, 'archive_flow')) {
+                alert('Você não tem permissão para arquivar fluxos.');
+                return;
+            }
             if (!confirm('Enviar todo o fluxo atual para Fluxos Anteriores? Isso irá limpar o fluxo atual.')) {
                 return;
             }
@@ -2502,6 +3127,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (flowArchiveDetail) {
         flowArchiveDetail.addEventListener('click', function (event) {
             const button = event.target.closest('[data-archive-delete]');
+            const exportButton = event.target.closest('[data-archive-export]');
+            if (exportButton) {
+                const id = exportButton.getAttribute('data-archive-export');
+                const archive = (system?.data?.archives || []).find(a => a.id === id);
+                system?.data?.exportArchive?.(archive);
+                return;
+            }
             if (!button) return;
             const id = button.getAttribute('data-archive-delete');
             if (!id) return;
@@ -2514,6 +3146,74 @@ document.addEventListener('DOMContentLoaded', function() {
                 const detail = document.getElementById('flowArchiveDetail');
                 if (detail) detail.innerHTML = '';
             });
+        });
+    }
+
+    const filterArchivesButton = document.getElementById('btnFilterArchives');
+    if (filterArchivesButton) {
+        filterArchivesButton.addEventListener('click', function () {
+            const start = document.getElementById('archiveStart')?.value || '';
+            const end = document.getElementById('archiveEnd')?.value || '';
+            system?.data?.loadArchivesFromBackend?.({ start, end }).then(() => {
+                system?.ui?.renderFlowArchivesList?.();
+            });
+        });
+    }
+
+    const clearArchiveFilterButton = document.getElementById('btnClearArchiveFilter');
+    if (clearArchiveFilterButton) {
+        clearArchiveFilterButton.addEventListener('click', function () {
+            const startInput = document.getElementById('archiveStart');
+            const endInput = document.getElementById('archiveEnd');
+            if (startInput) startInput.value = '';
+            if (endInput) endInput.value = '';
+            system?.data?.loadArchivesFromBackend?.().then(() => {
+                system?.ui?.renderFlowArchivesList?.();
+            });
+        });
+    }
+
+    const compareArchivesButton = document.getElementById('btnCompareArchives');
+    if (compareArchivesButton) {
+        compareArchivesButton.addEventListener('click', function () {
+            if (!system?.admin?.hasPermission?.(system?.currentUser, 'compare_archives')) {
+                alert('Você não tem permissão para comparar fluxos anteriores.');
+                return;
+            }
+            const selectA = document.getElementById('archiveCompareA');
+            const selectB = document.getElementById('archiveCompareB');
+            const idA = selectA?.value;
+            const idB = selectB?.value;
+            const archives = system?.data?.archives || [];
+            const a = archives.find(x => x.id === idA);
+            const b = archives.find(x => x.id === idB);
+            system?.ui?.compareArchives?.(a, b);
+        });
+    }
+
+    const reportRefreshButton = document.getElementById('btnReportRefresh');
+    if (reportRefreshButton) {
+        reportRefreshButton.addEventListener('click', function () {
+            system?.ui?.renderMonthlyReports?.();
+        });
+    }
+
+    const saveBudgetsButton = document.getElementById('btnSaveBudgets');
+    if (saveBudgetsButton) {
+        saveBudgetsButton.addEventListener('click', function () {
+            const isAdmin = system?.admin?.hasPermission?.(system?.currentUser, 'admin_access');
+            if (!isAdmin) {
+                alert('Somente admin pode salvar orçamentos.');
+                return;
+            }
+            const budgets = {
+                DMF: Number(document.getElementById('budgetDMF')?.value || 0),
+                JFX: Number(document.getElementById('budgetJFX')?.value || 0),
+                'Real Energy': Number(document.getElementById('budgetReal')?.value || 0)
+            };
+            system?.ui?.saveBudgets?.(budgets);
+            system?.ui?.renderMonthlyReports?.();
+            alert('Orçamentos salvos.');
         });
     }
 
