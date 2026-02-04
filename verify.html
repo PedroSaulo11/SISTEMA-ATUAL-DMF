@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Validação de Assinatura - DMF</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="verify.css">
+</head>
+<body>
+    <div class="verify-wrapper">
+        <div class="card">
+            <h2>Validação de Assinatura</h2>
+            <p>Cole o ID da assinatura ou abra este link via QR.</p>
+            <div class="form-group">
+                <label for="signatureIdInput">ID da assinatura</label>
+                <input type="text" id="signatureIdInput" class="styled-input" placeholder="Cole o ID">
+            </div>
+            <button id="btnVerifySignature" class="btn btn-primary">Verificar</button>
+            <div id="verifyResult" class="verify-result"></div>
+        </div>
+    </div>
+    <script src="verify.js"></script>
+</body>
+</html>

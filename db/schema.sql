@@ -55,3 +55,8 @@ CREATE TABLE IF NOT EXISTS audit_logins (
     details TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    user_id BIGINT PRIMARY KEY,
+    revoked_after TIMESTAMPTZ
+);

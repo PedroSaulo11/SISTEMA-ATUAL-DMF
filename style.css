@@ -658,6 +658,12 @@ tr:hover { background: #f8fbff; }
     border-color: rgba(22, 101, 52, 0.25);
 }
 
+.hint {
+    margin-top: 10px;
+    color: #5a677a;
+    font-size: 0.9rem;
+}
+
 .qr-box {
     margin-top: 6px;
     width: 96px;

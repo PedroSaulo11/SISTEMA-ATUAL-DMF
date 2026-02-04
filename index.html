@@ -42,6 +42,7 @@
             <button class="btn-side" data-nav="cobli">Cobli</button>
         </nav>
         <button id="btnLogout" class="btn btn-logout">Sair</button>
+        <button id="btnRevokeSelf" class="btn btn-ghost">Revogar Sessões</button>
     </aside>
 
     <main class="main-content">
@@ -221,6 +222,7 @@
                 <div class="admin-tabs">
                     <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
                     <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
+                    <button class="tab-btn" data-admin-tab="backup">Backup/Restore</button>
                 </div>
                 <div id="adminContent">
                     <div id="usersTab" class="admin-tab-content">
@@ -232,6 +234,15 @@
                         <h3>Cargos e Permissões</h3>
                         <button id="btnCreateRole" class="btn btn-primary">Criar Novo Cargo</button>
                         <div id="rolesGrid"></div>
+                    </div>
+                    <div id="backupTab" class="admin-tab-content hidden">
+                        <h3>Backup e Restauração</h3>
+                        <div class="actions">
+                            <button id="btnBackupDownload" class="btn btn-primary">Baixar Backup</button>
+                            <button id="btnBackupUpload" class="btn btn-ghost">Restaurar Backup</button>
+                            <input type="file" id="backupFileInput" class="hidden" accept=".json">
+                        </div>
+                        <div class="hint">A restauração substitui usuários, fluxos atuais e fluxos anteriores.</div>
                     </div>
                 </div>
             </div>

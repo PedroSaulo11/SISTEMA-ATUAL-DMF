@@ -78,6 +78,11 @@ const LoginAuditModel = () => getSequelize().define('audit_logins', {
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const UserSessionModel = () => getSequelize().define('user_sessions', {
+  user_id: { type: DataTypes.BIGINT, primaryKey: true },
+  revoked_after: { type: DataTypes.DATE },
+}, { timestamps: false, freezeTableName: true });
+
 async function initDb() {
   const db = getSequelize();
   const maxAttempts = Number(process.env.DB_CONNECT_RETRIES || 5);
@@ -92,6 +97,7 @@ async function initDb() {
       FlowPaymentModel();
       FlowArchiveModel();
       LoginAuditModel();
+      UserSessionModel();
       WebhookModel();
       await db.sync();
       dbReady = true;
@@ -194,6 +200,14 @@ async function listUsers() {
   return rows.map(mapUser);
 }
 
+async function replaceUsers(users) {
+  const User = UserModel();
+  await User.destroy({ where: {}, truncate: true });
+  if (users && users.length) {
+    await User.bulkCreate(users);
+  }
+}
+
 async function updateLastLogin(userId) {
   const User = UserModel();
   await User.update({ last_login: new Date() }, { where: { id: userId } });
@@ -243,6 +257,20 @@ async function listLoginAudits(limit = 200) {
     limit
   });
   return rows.map(r => r.toJSON());
+}
+
+async function getUserSession(userId) {
+  const Session = UserSessionModel();
+  const row = await Session.findByPk(userId);
+  return row ? row.toJSON() : null;
+}
+
+async function setUserSessionRevokedAfter(userId, revokedAfter) {
+  const Session = UserSessionModel();
+  await Session.upsert({
+    user_id: userId,
+    revoked_after: revokedAfter || null
+  });
 }
 
 async function listFlowPayments() {
@@ -298,6 +326,14 @@ async function deleteFlowArchive(id) {
   return Archive.destroy({ where: { id } });
 }
 
+async function replaceFlowArchives(archives) {
+  const Archive = FlowArchiveModel();
+  await Archive.destroy({ where: {}, truncate: true });
+  if (archives && archives.length) {
+    await Archive.bulkCreate(archives);
+  }
+}
+
 module.exports = {
   initDb,
   isDbReady,
@@ -308,6 +344,7 @@ module.exports = {
   updateUserById,
   deleteUserById,
   listUsers,
+  replaceUsers,
   updateLastLogin,
   getServiceToken,
   upsertServiceToken,
@@ -318,7 +355,10 @@ module.exports = {
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
+  replaceFlowArchives,
   insertLoginAudit,
   listLoginAudits,
+  getUserSession,
+  setUserSessionRevokedAfter,
   insertWebhook,
 };

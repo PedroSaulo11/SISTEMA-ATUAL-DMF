@@ -19,6 +19,7 @@ const {
   updateUserById,
   deleteUserById,
   listUsers,
+  replaceUsers,
   updateLastLogin,
   getServiceToken,
   upsertServiceToken,
@@ -29,8 +30,11 @@ const {
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
+  replaceFlowArchives,
   insertLoginAudit,
   listLoginAudits,
+  getUserSession,
+  setUserSessionRevokedAfter,
   insertWebhook
 } = require('./db');
 
@@ -163,6 +167,25 @@ const COBLI_AUTH_HEADER = process.env.COBLI_AUTH_HEADER || 'Authorization';
 const COBLI_AUTH_SCHEME = process.env.COBLI_AUTH_SCHEME || 'Bearer';
 const COBLI_WEBHOOK_SECRET = process.env.COBLI_WEBHOOK_SECRET;
 const COBLI_WEBHOOK_SIGNATURE_HEADER = process.env.COBLI_WEBHOOK_SIGNATURE_HEADER;
+const EVENT_WEBHOOK_URL = process.env.EVENT_WEBHOOK_URL || '';
+const EVENT_WEBHOOK_SECRET = process.env.EVENT_WEBHOOK_SECRET || '';
+
+async function emitEventWebhook(eventType, payload = {}) {
+  if (!EVENT_WEBHOOK_URL) return;
+  try {
+    const body = { event: eventType, timestamp: new Date().toISOString(), payload };
+    const headers = { 'Content-Type': 'application/json' };
+    if (EVENT_WEBHOOK_SECRET) {
+      const signature = crypto.createHmac('sha256', EVENT_WEBHOOK_SECRET)
+        .update(JSON.stringify(body))
+        .digest('hex');
+      headers['X-DMF-Signature'] = signature;
+    }
+    await axios.post(EVENT_WEBHOOK_URL, body, { headers, timeout: 5000 });
+  } catch (error) {
+    logger.warn('Event webhook failed', { eventType, error: error.message });
+  }
+}
 
 function computeChainHash({ prevHash, payment }) {
   if (!SIGNATURE_SECRET) return null;
@@ -451,7 +474,7 @@ function logTimeout(error, context) {
 const { body, param, query, validationResult } = require('express-validator');
 
 // Security: Authentication middleware
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
@@ -460,15 +483,27 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      logger.warn('Invalid token used', { error: err.message, ip: req.ip });
-      return res.status(403).json({ error: 'Invalid or expired token' });
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    if (isDbReady()) {
+      const session = await getUserSession(user.id);
+      if (session?.revoked_after) {
+        const iatMs = (user.iat || 0) * 1000;
+        if (iatMs && iatMs < new Date(session.revoked_after).getTime()) {
+          return res.status(403).json({ error: 'Session revoked' });
+        }
+      }
+      const dbUser = await getUserById(user.id);
+      if (!dbUser) {
+        return res.status(403).json({ error: 'User not found' });
+      }
     }
-
     req.user = user;
     next();
-  });
+  } catch (err) {
+    logger.warn('Invalid token used', { error: err.message, ip: req.ip });
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
 }
 
 // Security: Role-based authorization middleware
@@ -557,6 +592,11 @@ app.post('/api/auth/register', [
     users.push(fallbackUser);
 
     logger.info('User registered successfully', { username, email, role: (newUser?.role || fallbackUser.role) });
+    emitEventWebhook('user_created', {
+      userId: newUser?.id || fallbackUser.id,
+      username: normalizedUsername,
+      role: newUser?.role || fallbackUser.role
+    });
 
     res.status(201).json({
       message: 'User registered successfully',
@@ -658,6 +698,32 @@ app.get('/api/audit/logins', authenticateToken, authorizeRole('admin'), async (r
   } catch (error) {
     logger.error('Error listing login audits', { error: error.message });
     res.status(500).json({ error: 'Failed to list login audits' });
+  }
+});
+
+app.post('/api/events/budget-exceeded', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    emitEventWebhook('budget_exceeded', {
+      user: req.user?.username || null,
+      data: req.body || {}
+    });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Budget event error', { error: error.message });
+    res.status(500).json({ error: 'Failed to emit budget event' });
+  }
+});
+
+app.post('/api/events/role-change', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    emitEventWebhook('role_changed', {
+      user: req.user?.username || null,
+      data: req.body || {}
+    });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Role event error', { error: error.message });
+    res.status(500).json({ error: 'Failed to emit role event' });
   }
 });
 
@@ -772,6 +838,11 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
         .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }))
     );
     const refreshed = withChain.find(p => String(p.id) === String(paymentId)) || updated;
+    emitEventWebhook('payment_signed', {
+      paymentId,
+      user: req.user?.username || null,
+      assinatura: refreshed?.assinatura || null
+    });
     res.json({ success: true, payment: refreshed });
   } catch (error) {
     logger.error('Error signing flow payment', { error: error.message });
@@ -838,6 +909,12 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
       count: withChain.length
     });
     await replaceFlowPayments([]);
+    emitEventWebhook('flow_archived', {
+      archiveId: archive?.id,
+      label: archive?.label,
+      count: archive?.count,
+      user: req.user?.username || null
+    });
     res.json({ success: true, archive });
   } catch (error) {
     logger.error('Error creating flow archive', { error: error.message });
@@ -1200,6 +1277,36 @@ app.get('/api/auth/user-status', authenticateToken, (req, res) => {
   });
 });
 
+// Admin: revoke all sessions for a user
+app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), [
+  param('id').isInt().withMessage('Valid user ID required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    const userId = Number(req.params.id);
+    await setUserSessionRevokedAfter(userId, new Date());
+    emitEventWebhook('user_sessions_revoked', { userId, admin: req.user?.username || null });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Failed to revoke sessions', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to revoke sessions' });
+  }
+});
+
+// Self: revoke current sessions (logout everywhere)
+app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    await setUserSessionRevokedAfter(req.user?.id, new Date());
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Failed to revoke own sessions', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to revoke sessions' });
+  }
+});
+
 // Admin: list users
 app.get('/api/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
   try {
@@ -1242,6 +1349,7 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
+    const oldRole = user.role;
 
     const updates = {};
     if (req.body.username) updates.username = String(req.body.username).trim();
@@ -1267,6 +1375,16 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
       user = await updateUserById(userId, updates);
     } else {
       Object.assign(user, updates);
+    }
+
+    if (updates.role && oldRole !== user.role) {
+      emitEventWebhook('user_role_changed', {
+        userId,
+        username: user.username,
+        oldRole,
+        newRole: user.role,
+        admin: req.user?.username || null
+      });
     }
 
     res.json({ success: true, user: sanitizeUserForResponse(user) });
@@ -1307,10 +1425,95 @@ app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), [
       users.splice(index, 1);
     }
 
+    emitEventWebhook('user_deleted', {
+      userId,
+      username: user.username,
+      admin: req.user?.username || null
+    });
+
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to delete user', { error: error.message });
     res.status(500).json({ success: false, error: 'Failed to delete user' });
+  }
+});
+
+// Admin: backup (users + flow + archives)
+app.get('/api/backup', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const users = await listUsers();
+    const payments = await listFlowPayments();
+    const archives = await listFlowArchives();
+    res.json({
+      created_at: new Date().toISOString(),
+      users,
+      payments,
+      archives
+    });
+  } catch (error) {
+    logger.error('Backup failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to generate backup' });
+  }
+});
+
+// Admin: restore (users + flow + archives)
+app.post('/api/restore', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const payload = req.body || {};
+    const users = Array.isArray(payload.users) ? payload.users : [];
+    const payments = Array.isArray(payload.payments) ? payload.payments : [];
+    const archives = Array.isArray(payload.archives) ? payload.archives : [];
+
+    await replaceUsers(users.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      password_hash: u.password_hash,
+      role: u.role,
+      name: u.name || null,
+      created_at: u.created_at || new Date(),
+      last_login: u.last_login || null
+    })));
+
+    await replaceFlowPayments(payments.map(p => ({
+      id: String(p.id),
+      fornecedor: p.fornecedor || 'N/A',
+      data: p.data || null,
+      descricao: p.descricao || '',
+      valor: Number(p.valor) || 0,
+      centro: p.centro || '',
+      categoria: p.categoria || '',
+      assinatura: p.assinatura || null,
+      created_at: p.created_at || new Date(),
+      updated_at: p.updated_at || new Date()
+    })));
+
+    await replaceFlowArchives(archives.map(a => ({
+      id: String(a.id),
+      label: a.label,
+      payments: a.payments || [],
+      created_by: a.created_by || null,
+      count: Number(a.count) || 0,
+      created_at: a.created_at || new Date()
+    })));
+
+    emitEventWebhook('backup_restored', {
+      user: req.user?.username || null,
+      users: users.length,
+      payments: payments.length,
+      archives: archives.length
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Restore failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to restore backup' });
   }
 });
 

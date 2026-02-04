@@ -1362,6 +1362,7 @@ class UIManager {
         const archiveFilterArea = document.querySelector('.archive-filters');
         const archiveCompareArea = document.querySelector('.archive-compare');
         const compareBtn = document.getElementById('btnCompareArchives');
+        const revokeSelfBtn = document.getElementById('btnRevokeSelf');
 
         const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
@@ -1389,6 +1390,10 @@ class UIManager {
         }
         if (auditNavBtn) {
             auditNavBtn.classList.toggle('hidden', !canAudit);
+        }
+        if (revokeSelfBtn) {
+            revokeSelfBtn.classList.toggle('hidden', !isAdminAccess);
+            revokeSelfBtn.disabled = !isAdminAccess;
         }
         if (paymentsHistoryTabBtn) {
             paymentsHistoryTabBtn.classList.toggle('hidden', !canViewArchives);
@@ -1423,6 +1428,7 @@ class UIManager {
                             <td>
                                 <button class="btn btn-ghost" data-user-action="edit" data-user-id="${u.id}">Editar</button>
                                 <button class="btn btn-ghost" data-user-action="change-password" data-user-id="${u.id}">Trocar Senha</button>
+                                <button class="btn btn-ghost" data-user-action="revoke-session" data-user-id="${u.id}">Revogar Sessão</button>
                                 <button class="btn btn-danger" data-user-action="delete" data-user-id="${u.id}">Excluir</button>
                             </td>
                         </tr>
@@ -1441,6 +1447,8 @@ class UIManager {
                     this.editUser(id);
                 } else if (action === 'change-password') {
                     this.changePassword(id);
+                } else if (action === 'revoke-session') {
+                    this.core.admin.revokeSession(id);
                 } else if (action === 'delete') {
                     this.core.admin.deleteUser(id);
                 }
@@ -1552,10 +1560,28 @@ class UIManager {
             if (alerts.length) {
                 alertBox.classList.remove('ok');
                 alertBox.innerHTML = alerts.map(a => `<div>${a}</div>`).join('');
+                this.notifyBudgetExceeded({ monthKey, alerts });
             } else {
                 alertBox.classList.add('ok');
                 alertBox.textContent = 'Dentro do orçamento configurado.';
             }
+        }
+    }
+
+    notifyBudgetExceeded(payload) {
+        if (this.budgetAlertSentKey === payload.monthKey) return;
+        this.budgetAlertSentKey = payload.monthKey;
+        try {
+            fetch(`${getApiBase()}/api/events/budget-exceeded`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify(payload)
+            }).catch(() => {});
+        } catch (_) {
+            // ignore
         }
     }
 
@@ -1905,7 +1931,7 @@ class UIManager {
 
         const canSeeQr = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments') ||
             this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
-        const publicBase = `${getApiBase()}/api/public/signatures/`;
+        const publicBase = `${getApiBase()}/verify.html?id=`;
 
         body.innerHTML = this.core.data.records.map(p => {
             const assinaturaStr = p.assinatura
@@ -1954,14 +1980,28 @@ class UIManager {
     }
 
     renderSignatureQrCodes() {
-        if (!window.QRCode) return;
+        const qr = window.QRCode;
         document.querySelectorAll('.qr-box').forEach(box => {
             if (box.dataset.rendered) return;
             const text = box.getAttribute('data-qr');
             if (!text) return;
-            window.QRCode.toCanvas(document.createElement('canvas'), text, { width: 96 }, (err, canvas) => {
-                if (err) return;
-                box.appendChild(canvas);
+            if (!qr) {
+                box.innerHTML = `<a href="${text}" target="_blank" rel="noopener">Verificar</a>`;
+                box.dataset.rendered = 'true';
+                return;
+            }
+            qr.toDataURL(text, { width: 96, margin: 1 }, (err, url) => {
+                if (err) {
+                    box.innerHTML = `<a href="${text}" target="_blank" rel="noopener">Verificar</a>`;
+                    box.dataset.rendered = 'true';
+                    return;
+                }
+                const img = document.createElement('img');
+                img.src = url;
+                img.width = 96;
+                img.height = 96;
+                img.alt = 'QR de validação';
+                box.appendChild(img);
                 box.dataset.rendered = 'true';
             });
         });
@@ -2631,6 +2671,7 @@ class AdminManager {
         this.roles.push(newRole);
         this.saveRoles();
         this.core.audit.log('CRIAÇÃO CARGO', `Cargo ${name} criado com permissões: ${permissions.join(', ')}.`);
+        this.sendRoleEvent('create', newRole);
         this.core.ui.closeModal('createRoleModal');
         this.core.ui.renderRolesTable();
         form.reset();
@@ -2642,20 +2683,122 @@ class AdminManager {
         if (role) {
             Object.assign(role, updates);
             this.saveRoles();
-            this.core.audit.log('ATUALIZAÇÃO CARGO', `Cargo ${role.name} atualizado.`);
+            this.core.audit.log('ATUALIZAÇÃO CARGO', `Cargo ${role.name} atualizado. Permissões: ${(role.permissions || []).join(', ')}`);
+            this.sendRoleEvent('update', role);
         }
     }
 
     deleteRole(id) {
         if (!this.requireAdmin()) return;
+        const role = this.roles.find(r => r.id === id);
         this.roles = this.roles.filter(r => r.id !== id);
         this.saveRoles();
-        this.core.audit.log('EXCLUSÃO CARGO', `Cargo ID ${id} excluído.`);
+        this.core.audit.log('EXCLUSÃO CARGO', `Cargo ${role?.name || id} excluído.`);
+        if (role) this.sendRoleEvent('delete', role);
     }
 
     getRolePermissions(roleName) {
         const role = this.roles.find(r => r.name === roleName);
         return role ? role.permissions : [];
+    }
+
+    async sendRoleEvent(action, role) {
+        try {
+            await fetch(`${getApiBase()}/api/events/role-change`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ action, role })
+            });
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    async revokeSession(id) {
+        if (!this.requireAdmin()) return;
+        if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
+            alert('Use "Revogar Sessão" para si mesmo nas configurações da sessão.');
+            return;
+        }
+        if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
+        try {
+            const response = await fetch(`${getApiBase()}/api/auth/revoke/${id}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                alert('Falha ao revogar sessão.');
+                return;
+            }
+            this.core.audit.log('REVOGAÇÃO SESSÃO', `Sessões do usuário ${id} foram revogadas.`);
+            alert('Sessão revogada com sucesso.');
+        } catch (error) {
+            alert('Falha ao revogar sessão.');
+        }
+    }
+
+    async downloadBackup() {
+        if (!this.requireAdmin()) return;
+        try {
+            const response = await fetch(`${getApiBase()}/api/backup`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                alert('Falha ao gerar backup.');
+                return;
+            }
+            const data = await response.json();
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `dmf-backup-${new Date().toISOString().slice(0,10)}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            alert('Falha ao gerar backup.');
+        }
+    }
+
+    async restoreBackup(file) {
+        if (!this.requireAdmin()) return;
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const payload = JSON.parse(text);
+            const response = await fetch(`${getApiBase()}/api/restore`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                alert('Falha ao restaurar backup.');
+                return;
+            }
+            this.core.audit.log('RESTORE', 'Backup restaurado com sucesso.');
+            alert('Backup restaurado com sucesso.');
+            this.core.data.loadFromBackend().then(() => {
+                this.core.ui.renderPaymentsTable();
+                this.core.ui.updateStats();
+            });
+            this.refreshUsersFromApi().then(() => {
+                this.core.ui.renderUsersTable();
+            });
+        } catch (error) {
+            alert('Falha ao restaurar backup.');
+        }
     }
 
     hasPermission(user, permission) {
@@ -2979,6 +3122,25 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    const revokeSelfButton = document.getElementById('btnRevokeSelf');
+    if (revokeSelfButton) {
+        revokeSelfButton.addEventListener('click', function () {
+            if (!system?.admin?.hasPermission?.(system?.currentUser, 'admin_access')) {
+                return;
+            }
+            if (!confirm('Revogar todas as sessões ativas e sair?')) return;
+            fetch(`${getApiBase()}/api/auth/revoke-self`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            }).finally(() => {
+                window.dmfLogout?.();
+            });
+        });
+    }
+
     const clearPaymentsButton = document.getElementById('btnClearPayments');
     if (clearPaymentsButton) {
         clearPaymentsButton.addEventListener('click', function () {
@@ -3040,6 +3202,30 @@ document.addEventListener('DOMContentLoaded', function() {
     if (createRoleButton) {
         createRoleButton.addEventListener('click', function () {
             system?.ui?.openCreateRoleModal?.();
+        });
+    }
+
+    const backupDownloadButton = document.getElementById('btnBackupDownload');
+    if (backupDownloadButton) {
+        backupDownloadButton.addEventListener('click', function () {
+            system?.admin?.downloadBackup?.();
+        });
+    }
+
+    const backupUploadButton = document.getElementById('btnBackupUpload');
+    const backupFileInput = document.getElementById('backupFileInput');
+    if (backupUploadButton && backupFileInput) {
+        backupUploadButton.addEventListener('click', function () {
+            if (!confirm('Restaurar backup irá substituir usuários e fluxos atuais. Deseja continuar?')) {
+                return;
+            }
+            backupFileInput.click();
+        });
+        backupFileInput.addEventListener('change', function (event) {
+            const file = event.target.files[0];
+            if (file) {
+                system?.admin?.restoreBackup?.(file);
+            }
         });
     }
 

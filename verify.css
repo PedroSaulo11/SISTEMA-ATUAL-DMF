@@ -1,0 +1,28 @@
+.verify-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: #f4f6fb;
+    padding: 20px;
+}
+
+.verify-result {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #f7f9fc;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+}
+
+.verify-result.ok {
+    background: #e8f6ee;
+    color: #166534;
+    border-color: rgba(22, 101, 52, 0.25);
+}
+
+.verify-result.error {
+    background: #fde8e8;
+    color: #991b1b;
+    border-color: rgba(153, 27, 27, 0.25);
+}

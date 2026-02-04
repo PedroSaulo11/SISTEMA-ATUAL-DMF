@@ -20,6 +20,8 @@ env_variables:
   DB_CONNECT_RETRIES: "10"
   DB_CONNECT_RETRY_DELAY_MS: "2000"
   SIGNATURE_SECRET: "change-me"
+  EVENT_WEBHOOK_URL: ""
+  EVENT_WEBHOOK_SECRET: ""
 
 handlers:
 - url: /.*
