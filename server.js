@@ -55,6 +55,22 @@ function normalizeCompany(value) {
   return value ? String(value).trim() : null;
 }
 
+async function recordAuditEvent(req, action, details, metadata = null) {
+  try {
+    await insertAuditEvent({
+      action,
+      details,
+      username: req.user?.username || null,
+      userId: req.user?.id || null,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'] || null,
+      metadata: metadata && typeof metadata === 'object' ? metadata : null
+    });
+  } catch (error) {
+    logger.warn('Failed to record audit event', { action, error: error.message });
+  }
+}
+
 const contaAzulClient = axios.create({ timeout: CONTA_AZUL_TIMEOUT_MS });
 const cobliClient = axios.create({ timeout: COBLI_TIMEOUT_MS });
 
@@ -844,6 +860,10 @@ app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), 
       updated_at: new Date()
     }));
     await replaceFlowPayments(normalized, company);
+    await recordAuditEvent(req, normalized.length ? 'FLOW_IMPORT' : 'FLOW_CLEAR', `Fluxo ${company} importado (${normalized.length} registros).`, {
+      company,
+      count: normalized.length
+    });
     res.json({ success: true, count: normalized.length });
   } catch (error) {
     logger.error('Error importing flow payments', { error: error.message });
@@ -872,6 +892,10 @@ app.post('/api/flow-payments', authenticateToken, authorizeRole('user'), async (
       updated_at: new Date()
     };
     await upsertFlowPayment(payment);
+    await recordAuditEvent(req, 'FLOW_UPSERT', `Pagamento ${payment.id} criado/atualizado em ${company}.`, {
+      company,
+      paymentId: payment.id
+    });
     res.json({ success: true, payment });
   } catch (error) {
     logger.error('Error creating flow payment', { error: error.message });
@@ -900,6 +924,10 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
       paymentId,
       user: req.user?.username || null,
       assinatura: refreshed?.assinatura || null
+    });
+    await recordAuditEvent(req, 'FLOW_SIGN', `Pagamento ${paymentId} assinado em ${company}.`, {
+      company,
+      paymentId
     });
     res.json({ success: true, payment: refreshed });
   } catch (error) {
@@ -969,6 +997,11 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
       createdBy: req.user?.username || null,
       count: withChain.length
     });
+    await recordAuditEvent(req, 'FLOW_ARCHIVE_CREATE', `Fluxo arquivado (${company}).`, {
+      company,
+      count: withChain.length,
+      archiveId: archive?.id || null
+    });
     await replaceFlowPayments([], company);
     emitEventWebhook('flow_archived', {
       archiveId: archive?.id,
@@ -990,6 +1023,9 @@ app.delete('/api/flow-archives/:id', authenticateToken, authorizeRole('admin'), 
     }
     const archiveId = req.params.id;
     const deleted = await deleteFlowArchive(archiveId);
+    await recordAuditEvent(req, 'FLOW_ARCHIVE_DELETE', `Fluxo arquivado removido (${archiveId}).`, {
+      archiveId
+    });
     res.json({ success: true, deleted: Number(deleted) || 0 });
   } catch (error) {
     logger.error('Error deleting flow archive', { error: error.message });
