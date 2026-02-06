@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS audit_logins (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS audit_events (
+    id BIGSERIAL PRIMARY KEY,
+    action TEXT NOT NULL,
+    details TEXT,
+    username TEXT,
+    user_id BIGINT,
+    ip TEXT,
+    user_agent TEXT,
+    metadata JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS user_sessions (
     user_id BIGINT PRIMARY KEY,
     revoked_after TIMESTAMPTZ

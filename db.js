@@ -41,6 +41,7 @@ const TokenModel = () => getSequelize().define('api_tokens', {
 
 const FlowPaymentModel = () => getSequelize().define('flow_payments', {
   id: { type: DataTypes.TEXT, primaryKey: true },
+  company: { type: DataTypes.TEXT },
   fornecedor: { type: DataTypes.TEXT, allowNull: false },
   data: { type: DataTypes.TEXT },
   descricao: { type: DataTypes.TEXT },
@@ -54,6 +55,7 @@ const FlowPaymentModel = () => getSequelize().define('flow_payments', {
 
 const FlowArchiveModel = () => getSequelize().define('flow_archives', {
   id: { type: DataTypes.TEXT, primaryKey: true },
+  company: { type: DataTypes.TEXT },
   label: { type: DataTypes.TEXT, allowNull: false },
   payments: { type: DataTypes.JSONB, allowNull: false },
   created_by: { type: DataTypes.TEXT },
@@ -78,6 +80,18 @@ const LoginAuditModel = () => getSequelize().define('audit_logins', {
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const AuditEventModel = () => getSequelize().define('audit_events', {
+  id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
+  action: { type: DataTypes.TEXT, allowNull: false },
+  details: { type: DataTypes.TEXT },
+  username: { type: DataTypes.TEXT },
+  user_id: { type: DataTypes.BIGINT },
+  ip: { type: DataTypes.TEXT },
+  user_agent: { type: DataTypes.TEXT },
+  metadata: { type: DataTypes.JSONB },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
 const UserSessionModel = () => getSequelize().define('user_sessions', {
   user_id: { type: DataTypes.BIGINT, primaryKey: true },
   revoked_after: { type: DataTypes.DATE },
@@ -97,6 +111,7 @@ async function initDb() {
       FlowPaymentModel();
       FlowArchiveModel();
       LoginAuditModel();
+      AuditEventModel();
       UserSessionModel();
       WebhookModel();
       await db.sync();
@@ -259,6 +274,29 @@ async function listLoginAudits(limit = 200) {
   return rows.map(r => r.toJSON());
 }
 
+async function insertAuditEvent({ action, details, username, userId, ip, userAgent, metadata }) {
+  const Audit = AuditEventModel();
+  await Audit.create({
+    action,
+    details: details || null,
+    username: username || null,
+    user_id: userId || null,
+    ip: ip || null,
+    user_agent: userAgent || null,
+    metadata: metadata || null,
+    created_at: new Date()
+  });
+}
+
+async function listAuditEvents(limit = 200) {
+  const Audit = AuditEventModel();
+  const rows = await Audit.findAll({
+    order: [['created_at', 'DESC']],
+    limit
+  });
+  return rows.map(r => r.toJSON());
+}
+
 async function getUserSession(userId) {
   const Session = UserSessionModel();
   const row = await Session.findByPk(userId);
@@ -273,17 +311,35 @@ async function setUserSessionRevokedAfter(userId, revokedAfter) {
   });
 }
 
-async function listFlowPayments() {
+async function listFlowPayments(company = null) {
   const Flow = FlowPaymentModel();
-  const rows = await Flow.findAll({ order: [['created_at', 'ASC']] });
+  let where = {};
+  if (company) {
+    if (company === 'DMF') {
+      where = { [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { company };
+    }
+  }
+  const rows = await Flow.findAll({ where, order: [['created_at', 'ASC']] });
   return rows.map(r => r.toJSON());
 }
 
-async function replaceFlowPayments(payments) {
+async function replaceFlowPayments(payments, company = null) {
   const Flow = FlowPaymentModel();
-  await Flow.destroy({ where: {}, truncate: true });
+  if (company) {
+    if (company === 'DMF') {
+      await Flow.destroy({ where: { [Op.or]: [{ company }, { company: null }] } });
+    } else {
+      await Flow.destroy({ where: { company } });
+    }
+  } else {
+    await Flow.destroy({ where: {}, truncate: true });
+  }
   if (payments && payments.length) {
-    await Flow.bulkCreate(payments);
+    for (const payment of payments) {
+      await Flow.upsert(payment);
+    }
   }
 }
 
@@ -295,24 +351,41 @@ async function upsertFlowPayment(payment) {
   });
 }
 
-async function updateFlowPayment(id, updates) {
+async function updateFlowPayment(id, updates, company = null) {
   const Flow = FlowPaymentModel();
-  await Flow.update({ ...updates, updated_at: new Date() }, { where: { id } });
-  const row = await Flow.findByPk(id);
+  let where = { id };
+  if (company) {
+    if (company === 'DMF') {
+      where = { id, [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { id, company };
+    }
+  }
+  await Flow.update({ ...updates, updated_at: new Date() }, { where });
+  const row = await Flow.findOne({ where });
   return row ? row.toJSON() : null;
 }
 
-async function listFlowArchives() {
+async function listFlowArchives(company = null) {
   const Archive = FlowArchiveModel();
-  const rows = await Archive.findAll({ order: [['created_at', 'DESC']] });
+  let where = {};
+  if (company) {
+    if (company === 'DMF') {
+      where = { [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { company };
+    }
+  }
+  const rows = await Archive.findAll({ where, order: [['created_at', 'DESC']] });
   return rows.map(r => r.toJSON());
 }
 
-async function createFlowArchive({ id, label, payments, createdBy, count }) {
+async function createFlowArchive({ id, label, payments, createdBy, count, company }) {
   const Archive = FlowArchiveModel();
   const row = await Archive.create({
     id,
     label,
+    company: company || null,
     payments,
     created_by: createdBy || null,
     count: Number(count) || 0,
@@ -358,6 +431,8 @@ module.exports = {
   replaceFlowArchives,
   insertLoginAudit,
   listLoginAudits,
+  insertAuditEvent,
+  listAuditEvents,
   getUserSession,
   setUserSessionRevokedAfter,
   insertWebhook,

@@ -77,6 +77,25 @@ function setBackendStatus(message, tone = 'info') {
     el.classList.add(toneClass);
 }
 
+function showToast(message, type = 'info', ttl = 3500) {
+    if (!message) return;
+    showToast.last = showToast.last || {};
+    const now = Date.now();
+    if (showToast.last[message] && now - showToast.last[message] < 4000) return;
+    showToast.last[message] = now;
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-6px)';
+        setTimeout(() => toast.remove(), 200);
+    }, ttl);
+}
+
 function parseJwtPayload(token) {
     try {
         const payload = token.split('.')[1];
@@ -170,38 +189,44 @@ class SyncManager {
         if (!token) return false;
         try {
             if (item.type === 'import') {
-                const records = this.core.data.records || [];
-                const response = await fetch(`${getApiBase()}/api/flow-payments/import`, {
+                const company = item.data?.company || this.core.data.currentCompany;
+                let records = item.data?.payments;
+                if (!records || !Array.isArray(records)) {
+                    records = this.core.data.loadCompanyPayments(company);
+                }
+                const response = await fetch(`${getApiBase()}/api/flow-payments/import?company=${encodeURIComponent(company)}`, {
                     method: 'POST',
                     cache: 'no-store',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
                     },
-                    body: JSON.stringify(records)
+                    body: JSON.stringify({ company, payments: records })
                 });
                 return response.ok;
             }
             if (item.type === 'upsert') {
-                const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+                const company = item.data?.company || this.core.data.currentCompany;
+                const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(company)}`, {
                     method: 'POST',
                     cache: 'no-store',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
                     },
-                    body: JSON.stringify(item.data)
+                    body: JSON.stringify({ ...item.data, company })
                 });
                 return response.ok;
             }
             if (item.type === 'sign') {
-                const response = await fetch(`${getApiBase()}/api/flow-payments/${item.data.id}/sign`, {
+                const company = item.data?.company || this.core.data.currentCompany;
+                const response = await fetch(`${getApiBase()}/api/flow-payments/${item.data.id}/sign?company=${encodeURIComponent(company)}`, {
                     method: 'PATCH',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
                     },
-                    body: JSON.stringify({ assinatura: item.data.assinatura })
+                    body: JSON.stringify({ assinatura: item.data.assinatura, company })
                 });
                 return response.ok;
             }
@@ -220,7 +245,8 @@ class DMFSystem {
             PAYMENTS: 'dmf_enterprise_data',
             LOGS: 'dmf_enterprise_audit',
             SESSION: 'dmf_active_session',
-            COST_CENTERS: 'dmf_enterprise_cost_centers' // ALTERADO
+            COST_CENTERS: 'dmf_enterprise_cost_centers', // ALTERADO
+            COST_CENTER_RULES: 'dmf_enterprise_cc_permissions'
         };
 
         this.init();
@@ -315,16 +341,27 @@ class AuthManager {
 class DataProcessor {
     constructor(core) {
         this.core = core;
-        this.records = JSON.parse(localStorage.getItem(core.storageKeys.PAYMENTS)) || [];
+        this.currentCompany = 'DMF';
+        this.records = this.loadCompanyPayments(this.currentCompany);
         this.archives = [];
+        this.flowFetchInFlight = false;
+        this.flowFetchLastAt = 0;
+        this.flowFetchMinInterval = 60000;
+        this.flowFetchBackoff = 0;
+        this.flowFetchCooldownUntil = 0;
+        this.lastSyncAt = null;
+        this.centerCompanyOverrides = this.loadCenterCompanyOverrides();
+        this.pendingCenterAssignments = new Set();
         // === Centros de Custo: carga e união com o fluxo === // ALTERADO
         const persisted = JSON.parse(localStorage.getItem(core.storageKeys.COST_CENTERS) || '[]'); // ALTERADO
         const fromRecords = Array.from(new Set((this.records || []).map(r => (r.centro || '').trim()).filter(Boolean))); // ALTERADO
         this.costCenters = this._dedupCaseInsensitive([...(persisted || []), ...fromRecords]); // ALTERADO
         localStorage.setItem(core.storageKeys.COST_CENTERS, JSON.stringify(this.costCenters)); // ALTERADO
         window.DMF_CONTEXT.centrosCusto = this.costCenters; // ALTERADO
+        window.DMF_CONTEXT.centroEmpresaOverrides = this.centerCompanyOverrides;
         window.DMF_CONTEXT.pagamentos = this.records;
         window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+        window.DMF_CONTEXT.currentCompany = this.currentCompany;
         if (window.DMF_CONTEXT) {
             window.DMF_CONTEXT.archives = this.archives;
         }
@@ -380,10 +417,85 @@ class DataProcessor {
         return totals;
     }
 
-    async loadFromBackend() {
-        setFlowSyncStatus('Sincronizando com o servidor...', 'info');
+    nextFlowBackoffDelay() {
+        const base = 15000;
+        const max = 120000;
+        if (!this.flowFetchBackoff) {
+            this.flowFetchBackoff = base;
+        } else {
+            this.flowFetchBackoff = Math.min(max, this.flowFetchBackoff * 2);
+        }
+        return this.flowFetchBackoff;
+    }
+
+    normalizeCompany(value) {
+        const v = String(value || '').trim().toLowerCase();
+        if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+        if (v === 'jfx') return 'JFX';
+        if (v === 'dmf') return 'DMF';
+        return value || 'DMF';
+    }
+
+    companyKey(value) {
+        const c = this.normalizeCompany(value);
+        if (c === 'Real Energy') return 'REAL_ENERGY';
+        return c;
+    }
+
+    getPaymentsStorageKey(company) {
+        const key = this.companyKey(company);
+        return `${this.core.storageKeys.PAYMENTS}_${key}`;
+    }
+
+    loadCompanyPayments(company) {
         try {
-            const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+            const raw = localStorage.getItem(this.getPaymentsStorageKey(company));
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    setCurrentCompany(company) {
+        this.currentCompany = this.normalizeCompany(company);
+        this.records = this.loadCompanyPayments(this.currentCompany);
+        window.DMF_CONTEXT.pagamentos = this.records;
+        window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+        window.DMF_CONTEXT.currentCompany = this.currentCompany;
+        if (window.DMF_BRAIN) {
+            window.DMF_BRAIN.pagamentos = this.records;
+            window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
+        }
+    }
+
+    resetFlowBackoff() {
+        this.flowFetchBackoff = 0;
+        this.flowFetchCooldownUntil = 0;
+    }
+
+    async loadFromBackend(force = false, companyOverride = null) {
+        const company = this.normalizeCompany(companyOverride || this.currentCompany);
+        const now = Date.now();
+        if (this.flowFetchInFlight) return false;
+        if (!force) {
+            const sharedKey = 'dmf_flow_fetch_last';
+            const sharedLast = Number(localStorage.getItem(sharedKey) || 0);
+            if (sharedLast && now - sharedLast < this.flowFetchMinInterval) {
+                return false;
+            }
+            if (now < this.flowFetchCooldownUntil) {
+                return false;
+            }
+            if (now - this.flowFetchLastAt < this.flowFetchMinInterval) {
+                return false;
+            }
+        }
+        setFlowSyncStatus('Sincronizando com o servidor...', 'info');
+        this.flowFetchInFlight = true;
+        this.flowFetchLastAt = now;
+        try { localStorage.setItem('dmf_flow_fetch_last', String(now)); } catch (_) {}
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(company)}`, {
                 cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
@@ -394,22 +506,40 @@ class DataProcessor {
                 if (response.status === 401 || response.status === 403) {
                     console.warn('Flow payments fetch unauthorized');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    this.resetFlowBackoff();
+                    return false;
+                }
+                if (response.status === 429 || response.status >= 500) {
+                    const delay = this.nextFlowBackoffDelay();
+                    this.flowFetchCooldownUntil = Date.now() + delay;
+                    setFlowSyncStatus(`Muitas solicitações. Reenviando em ${Math.ceil(delay / 1000)}s.`, 'warn');
+                    showToast('Servidor ocupado. Vamos tentar novamente em instantes.', 'warn');
+                    console.warn('Flow payments fetch throttled:', response.status);
+                    return false;
                 }
                 console.warn('Flow payments fetch failed:', response.status);
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar. Tente novamente.', 'error');
+                    showToast('Falha ao sincronizar pagamentos.', 'error');
                 }
                 return false;
             }
             if (response.status === 304) {
                 setFlowSyncStatus(`Sem alterações. Última verificação: ${formatTimeNow()}`, 'ok');
+                this.lastSyncAt = new Date();
+                this.resetFlowBackoff();
                 return true;
             }
             const data = await response.json();
-            this.records = data.payments || [];
+            this.records = (data.payments || []).map(p => ({
+                ...p,
+                company: p.company || company
+            }));
+            this.currentCompany = company;
             this.save();
             window.DMF_CONTEXT.pagamentos = this.records;
             window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+            window.DMF_CONTEXT.currentCompany = this.currentCompany;
             if (window.DMF_BRAIN) {
                 window.DMF_BRAIN.pagamentos = this.records;
                 window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
@@ -419,11 +549,18 @@ class DataProcessor {
             } else {
                 setFlowSyncStatus('Nenhum pagamento encontrado no servidor.', 'warn');
             }
+            this.lastSyncAt = new Date();
+            this.resetFlowBackoff();
             return true;
         } catch (error) {
             console.warn('Flow payments fetch unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível. Tente novamente.', 'error');
+            showToast('Servidor indisponível. Tente novamente.', 'error');
+            const delay = this.nextFlowBackoffDelay();
+            this.flowFetchCooldownUntil = Date.now() + delay;
             return false;
+        } finally {
+            this.flowFetchInFlight = false;
         }
     }
 
@@ -432,6 +569,7 @@ class DataProcessor {
             const params = new URLSearchParams();
             if (filters.start) params.set('start', filters.start);
             if (filters.end) params.set('end', filters.end);
+            params.set('company', this.currentCompany);
             const response = await fetch(`${getApiBase()}/api/flow-archives${params.toString() ? `?${params}` : ''}`, {
                 cache: 'no-store',
                 headers: {
@@ -457,7 +595,7 @@ class DataProcessor {
 
     async archiveCurrentFlow() {
         try {
-            const response = await fetch(`${getApiBase()}/api/flow-archives`, {
+            const response = await fetch(`${getApiBase()}/api/flow-archives?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -478,6 +616,7 @@ class DataProcessor {
             this.save();
             window.DMF_CONTEXT.pagamentos = this.records;
             window.DMF_CONTEXT.assinaturas = [];
+            window.DMF_CONTEXT.currentCompany = this.currentCompany;
             await this.loadArchivesFromBackend();
             return data?.archive || null;
         } catch (error) {
@@ -589,6 +728,7 @@ class DataProcessor {
 
                     return {
                         id: (Date.now() + Math.random()).toString(),
+                        company: this.currentCompany,
                         fornecedor: r['Nome do fornecedor'] || 'N/A',
                         data: r['Data prevista'] || 'Pendente',
                         descricao: descricao,
@@ -639,6 +779,10 @@ class DataProcessor {
         const idx = this.records.findIndex(r => r.id === id);
         if (idx === -1) return false; // ALTERADO
         const r = this.records[idx];
+        if (!this.core.admin.canSignCenter(this.core.currentUser, r.centro)) {
+            alert('Você não tem permissão para assinar este centro de custo.');
+            return false;
+        }
         if (r.assinatura) return true; // já assinado // ALTERADO
 
         const u = this.core.currentUser || {};
@@ -688,17 +832,17 @@ class DataProcessor {
         this.records[idx] = r; // ALTERADO
         this.save(); // ALTERADO
         try {
-            await fetch(`${getApiBase()}/api/flow-payments/${id}/sign`, {
+            await fetch(`${getApiBase()}/api/flow-payments/${id}/sign?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
                 },
-                body: JSON.stringify({ assinatura: r.assinatura })
+                body: JSON.stringify({ assinatura: r.assinatura, company: this.currentCompany })
             });
         } catch (error) {
             console.warn('Flow payment sign sync failed:', error.message);
-            this.core.sync.enqueue({ type: 'sign', data: { id, assinatura: r.assinatura } });
+            this.core.sync.enqueue({ type: 'sign', data: { id, assinatura: r.assinatura, company: this.currentCompany } });
         }
 
         try { // manter telemetria/contexto, sem quebrar se não existir
@@ -721,21 +865,49 @@ class DataProcessor {
         return true; // ALTERADO
     }
 
+    async signAllPending() {
+        if (!this.core.currentUser) {
+            alert('Você precisa estar logado para assinar pagamentos.');
+            return false;
+        }
+        if (!this.core.admin.hasPermission(this.core.currentUser, 'sign_payments')) {
+            alert('Você não tem permissão para assinar pagamentos.');
+            return false;
+        }
+        const pendentes = (this.records || []).filter(r => !r.assinatura)
+            .filter(r => this.core.admin.canSignCenter(this.core.currentUser, r.centro));
+        if (!pendentes.length) {
+            showToast('Nenhum pagamento pendente para assinar.', 'info');
+            return true;
+        }
+        let signed = 0;
+        for (const p of pendentes) {
+            try {
+                const ok = await this.sign(p.id);
+                if (ok) signed += 1;
+            } catch (_) {
+                // continue
+            }
+        }
+        showToast(`Assinaturas concluídas: ${signed}/${pendentes.length}`, 'success');
+        return true;
+    }
+
     save() {
-        localStorage.setItem(this.core.storageKeys.PAYMENTS, JSON.stringify(this.records));
+        localStorage.setItem(this.getPaymentsStorageKey(this.currentCompany), JSON.stringify(this.records));
     }
 
     async syncImportToBackend() {
         setFlowSyncStatus('Sincronizando importação...', 'info');
         try {
-            const response = await fetch(`${getApiBase()}/api/flow-payments/import`, {
+            const response = await fetch(`${getApiBase()}/api/flow-payments/import?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
                 },
-                body: JSON.stringify(this.records)
+                body: JSON.stringify({ company: this.currentCompany, payments: this.records })
             });
             if (!response.ok) {
                 if (response.status === 401 || response.status === 403) {
@@ -746,118 +918,158 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar importação.', 'error');
                 }
-                this.core.sync.enqueue({ type: 'import' });
+                this.core.sync.enqueue({ type: 'import', data: { company: this.currentCompany, payments: this.records } });
                 return;
             }
             setFlowSyncStatus(`Importação sincronizada às ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payments import unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível para importação.', 'error');
-            this.core.sync.enqueue({ type: 'import' });
+            this.core.sync.enqueue({ type: 'import', data: { company: this.currentCompany, payments: this.records } });
         }
     }
 
     getCompanyTotals() {
-        const empresas = {
-            JFX: ['RECAP', 'EDISER', 'Carmo Do Rio Claro'],
-            DMF: [
-                'Reisolamento Campina Grande',
-                'Reisolamento Natal',
-                'Manutennção Civil Sede E subestação',
-                'Manutenção Civil AL/PE',
-                'Manutenção Civil Bahia',
-                'Administração Central DJ',
-                'Almeirim e Barreiras',
-                'Barreiras/Almeirim'
-            ],
-            'Real Energy': ['Campos Novos', 'Vitória da Conquista']
-        };
-
-        const normalize = (value) => String(value || '').trim().toLowerCase();
-        const centersByCompany = Object.fromEntries(
-            Object.entries(empresas).map(([company, centers]) => [
-                company,
-                centers.map(normalize)
-            ])
-        );
-
+        const empresas = this.getCompanyCenterMap();
         const totals = {};
-        Object.keys(centersByCompany).forEach(company => {
+        Object.keys(empresas).forEach(company => {
             totals[company] = 0;
         });
         totals.Outros = 0;
 
         (this.records || []).forEach((p) => {
-            const centro = normalize(p.centro);
             const valor = Math.abs(Number(p.valor) || 0);
-            let matched = false;
-            for (const [company, centers] of Object.entries(centersByCompany)) {
-                if (centers.includes(centro)) {
-                    totals[company] += valor;
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                totals.Outros += valor;
-            }
+            const company = this.getPaymentCompany(p);
+            totals[company] = (totals[company] || 0) + valor;
         });
 
         return totals;
     }
+
+    getCompanyCenterTotals() {
+        const totalsByCompany = {};
+        (this.records || []).forEach((p) => {
+            const company = this.getPaymentCompany(p);
+            const center = String(p.centro || 'Geral').trim() || 'Geral';
+            const valor = Math.abs(Number(p.valor) || 0);
+            if (!totalsByCompany[company]) {
+                totalsByCompany[company] = { total: 0, centers: {} };
+            }
+            totalsByCompany[company].total += valor;
+            totalsByCompany[company].centers[center] = (totalsByCompany[company].centers[center] || 0) + valor;
+        });
+        return totalsByCompany;
+    }
     
-    export() {
+    export(companyFilter = null) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
             alert('Você não tem permissão para exportar o fluxo de pagamentos.');
             return;
         }
+        const maxExportRows = 2000;
+        const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        const normalizeCompany = (value) => {
+            const v = String(value || '').trim().toLowerCase();
+            if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+            if (v === 'jfx') return 'JFX';
+            if (v === 'dmf') return 'DMF';
+            return value || null;
+        };
+        const filterCompany = companyFilter && companyFilter !== 'ALL'
+            ? normalizeCompany(companyFilter)
+            : this.currentCompany;
+        const filtered = filterCompany
+            ? (this.records || []).filter(p => {
+                const c = this.getPaymentCompany(p);
+                return c === filterCompany;
+            })
+            : (this.records || []);
+
+        const totalCount = filtered.length;
+        if (totalCount > maxExportRows && !isAdmin) {
+            alert(`Exportação bloqueada: limite de ${maxExportRows} registros. Contate o admin.`);
+            try {
+                this.core.audit.log('EXPORTAÇÃO BLOQUEADA', `Tentativa de exportar ${totalCount} registros (limite ${maxExportRows}).`);
+                fetch(`${getApiBase()}/api/audit/events`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...getAuthHeaders()
+                    },
+                    body: JSON.stringify({
+                        action: 'EXPORT_BLOCKED',
+                        details: `Tentativa de exportar ${totalCount} registros (limite ${maxExportRows}).`,
+                        metadata: { company: filterCompany || 'ALL', count: totalCount, limit: maxExportRows }
+                    })
+                }).catch(() => {});
+            } catch (_) {}
+            return;
+        }
+        if (totalCount > maxExportRows && isAdmin) {
+            const ok = confirm(`Você está prestes a exportar ${totalCount} registros. Deseja continuar?`);
+            if (!ok) return;
+        }
+
+        const dates = filtered.map(p => this.parsePaymentDate(p.data)).filter(Boolean);
+        const minDate = dates.length ? new Date(Math.min(...dates.map(d => d.getTime()))) : null;
+        const maxDate = dates.length ? new Date(Math.max(...dates.map(d => d.getTime()))) : null;
+        const exportMeta = {
+            company: filterCompany || 'ALL',
+            count: totalCount,
+            periodStart: minDate ? minDate.toISOString() : null,
+            periodEnd: maxDate ? maxDate.toISOString() : null,
+            filters: {
+                query: this.core?.ui?.paymentFilters?.query || '',
+                pendingOnly: !!this.core?.ui?.paymentFilters?.pendingOnly
+            }
+        };
+        try {
+            this.core.audit.log('EXPORTAÇÃO', `Exportado ${totalCount} registros (${exportMeta.company}).`);
+            fetch(`${getApiBase()}/api/audit/events`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({
+                    action: 'EXPORT_FLOW',
+                    details: `Exportado ${totalCount} registros (${exportMeta.company}).`,
+                    metadata: exportMeta
+                })
+            }).catch(() => {});
+        } catch (_) {}
         // Preparar dados para exportação na ordem da tabela
         const header = [
             'Fornecedor',
             'Data',
             'Descrição',
             'Valor',
-            'Centro de Custo',
             'Categoria',
-            'Status',
+            'Centro de Custo',
             'Assinatura',
-            'ID da Assinatura',
-            '',
-            '',
-            'Empresa',
-            'Total'
+            'ID da Assinatura'
         ];
 
-        const rows = this.records.map(p => ([
+        const rows = filtered.map(p => ([
             p.fornecedor,
             p.data,
             p.descricao || "",
             p.valor,
-            p.centro,
             p.categoria || "",
-            p.assinatura ? 'Assinado' : 'Pendente',
+            p.centro,
             p.assinatura
                 ? `Assinado por ${p.assinatura.usuarioNome} em ${new Date(p.assinatura.dataISO).toLocaleString('pt-BR')}` // ALTERADO
                 : '-',
-            p.assinatura?.hash || '-',
-            '',
-            '',
-            '',
-            ''
+            p.assinatura?.hash || '-'
         ]));
 
-        const totals = this.getCompanyTotals();
-        const totalRows = [
-            ['','','','','','','','','','','', 'DMF', `R$ ${totals.DMF.toLocaleString('pt-BR')}`],
-            ['','','','','','','','','','','', 'JFX', `R$ ${totals.JFX.toLocaleString('pt-BR')}`],
-            ['','','','','','','','','','','', 'REAL', `R$ ${totals['Real Energy'].toLocaleString('pt-BR')}`]
-        ];
-
-        const aoa = [header, ...rows, ...totalRows];
+        const aoa = [header, ...rows];
         const ws = XLSX.utils.aoa_to_sheet(aoa);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Fluxo DMF");
-        XLSX.writeFile(wb, "DMF_Financeiro_Assinado.xlsx");
+        const sheetName = filterCompany ? `Fluxo ${filterCompany}` : "Fluxo";
+        const fileName = filterCompany ? `Fluxo_${String(filterCompany).replace(/\s+/g, '_')}.xlsx` : "Fluxo_Pagamentos.xlsx";
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        XLSX.writeFile(wb, fileName);
     }
 
     clearAll() {
@@ -895,19 +1107,96 @@ class DataProcessor {
         window.DMF_CONTEXT.centrosCusto = this.costCenters;
         this.core.audit?.log?.('NOVO CENTRO', `Centro de Custo adicionado: ${n}`, 'centro_de_custo'); // ALTERADO
         try { registrarEvento('centro_novo', this.core.currentUser, `Centro criado: ${n}`, 'centro'); } catch(e){} // ALTERADO
+        if (!this.getCenterCompanyOverride(n) && !this.pendingCenterAssignments.has(this._key(n))) {
+          this.pendingCenterAssignments.add(this._key(n));
+          this.core?.ui?.openCenterAssignmentModal?.(n);
+        }
       }
       return true;
     } // ALTERADO
 
-    addPayment({ fornecedor, data, descricao, valor, centro }) { // ALTERADO
+    getCompanyCenterMap() {
+        return {
+            JFX: ['RECAP', 'EDISER'],
+            DMF: [
+                'Reisolamento Campina Grande',
+                'Reisolamento Natal',
+                'Administração Central',
+                'Administração Central ADJ',
+                'Despesas Pessoais',
+                'Manutenção Civil Sede e Subestação',
+                'Manutenção Civil AL/PE',
+                'Manutenção Civil Bahia',
+            ],
+            'Real Energy': ['Campos Novos', 'Vitória da Conquista']
+        };
+    }
+
+    getCompanyForCenter(center) {
+        const normalize = (value) => String(value || '').trim().toLowerCase();
+        const target = normalize(center);
+        const override = this.getCenterCompanyOverride(center);
+        if (override) return override;
+        const map = this.getCompanyCenterMap();
+        for (const [company, centers] of Object.entries(map)) {
+            if (centers.map(normalize).includes(target)) return company;
+        }
+        return 'Outros';
+    }
+
+    loadCenterCompanyOverrides() {
+        try {
+            const raw = localStorage.getItem('dmf_center_company_overrides');
+            return raw ? JSON.parse(raw) : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    saveCenterCompanyOverrides() {
+        localStorage.setItem('dmf_center_company_overrides', JSON.stringify(this.centerCompanyOverrides || {}));
+        if (window.DMF_CONTEXT) {
+            window.DMF_CONTEXT.centroEmpresaOverrides = this.centerCompanyOverrides;
+        }
+    }
+
+    getCenterCompanyOverride(center) {
+        if (!center) return null;
+        const key = this._key(center);
+        const entry = this.centerCompanyOverrides?.[key];
+        if (!entry) return null;
+        return this.normalizeCompany(entry.company || entry);
+    }
+
+    setCenterCompany(center, company) {
+        const label = this._norm(center);
+        if (!label || !company) return false;
+        const key = this._key(label);
+        this.centerCompanyOverrides = this.centerCompanyOverrides || {};
+        this.centerCompanyOverrides[key] = { company: this.normalizeCompany(company), label };
+        this.pendingCenterAssignments?.delete?.(key);
+        this.saveCenterCompanyOverrides();
+        return true;
+    }
+
+    getPaymentCompany(payment) {
+        if (!payment) return 'Outros';
+        if (payment.company) {
+            return this.normalizeCompany(payment.company);
+        }
+        return this.getCompanyForCenter(payment.centro);
+    }
+
+    addPayment({ fornecedor, data, descricao, valor, centro, categoria }) { // ALTERADO
         const record = {
             id: (Date.now() + Math.random()).toString(), // ALTERADO
+            company: this.currentCompany,
             fornecedor: (fornecedor || '').trim() || 'N/A', // ALTERADO
             data: data || 'Pendente', // ALTERADO
             descricao: (descricao || '').trim(), // ALTERADO
             valor: Math.abs(Number(valor) || 0), // ALTERADO
             centro: (centro || 'Geral').trim() || 'Geral', // ALTERADO
-            categoria: '',
+            categoria: (categoria || '').trim(),
             assinatura: null, // começa Pendente por regra do sistema // ALTERADO
             timestamp: new Date().toISOString() // ALTERADO
         };
@@ -937,14 +1226,14 @@ class DataProcessor {
     async syncPaymentToBackend(record) {
         setFlowSyncStatus('Sincronizando pagamento...', 'info');
         try {
-            const response = await fetch(`${getApiBase()}/api/flow-payments`, {
+            const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
                 },
-                body: JSON.stringify(record)
+                body: JSON.stringify({ ...record, company: this.currentCompany })
             });
             if (!response.ok) {
                 if (response.status === 401 || response.status === 403) {
@@ -955,14 +1244,14 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar pagamento.', 'error');
                 }
-                this.core.sync.enqueue({ type: 'upsert', data: record });
+                this.core.sync.enqueue({ type: 'upsert', data: { ...record, company: this.currentCompany } });
                 return;
             }
             setFlowSyncStatus(`Pagamento sincronizado às ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payment create unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível para pagamento.', 'error');
-            this.core.sync.enqueue({ type: 'upsert', data: record });
+            this.core.sync.enqueue({ type: 'upsert', data: { ...record, company: this.currentCompany } });
         }
     }
 
@@ -1075,7 +1364,15 @@ class DataProcessor {
 }
 
 class UIManager {
-    constructor(core) { this.core = core; }
+    constructor(core) {
+        this.core = core;
+        this.paymentFilters = { query: '', pendingOnly: false };
+        this.paymentsFilterTimer = null;
+        this.userStatusInFlight = false;
+        this.userStatusLastAt = 0;
+        this.userStatusMinInterval = 60000;
+        this.companyFilter = 'DMF';
+    }
 
     navigate(viewId, activeButton = null) {
         if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
@@ -1110,11 +1407,186 @@ class UIManager {
         } else {
             this.stopFlowAutoRefresh();
         }
+
+        if (viewId === 'payments') {
+            const company = activeButton?.getAttribute?.('data-company');
+            if (company) {
+                this.setCompanyFilter(company);
+                this.core.data.setCurrentCompany(company);
+                this.core.data.loadFromBackend(true, company).then(() => {
+                    this.renderPaymentsTable();
+                    this.updateStats();
+                });
+            }
+        }
     }
 
     showLogin() {
         document.getElementById('appSection').classList.add('hidden');
         document.getElementById('loginSection').classList.remove('hidden');
+    }
+
+    initQuickActions() {
+        const btnImport = document.getElementById('btnQuickImport');
+        const btnSign = document.getElementById('btnQuickSign');
+        const btnExport = document.getElementById('btnQuickExport');
+        if (btnImport) {
+            btnImport.addEventListener('click', () => {
+                this.navigate('payments', document.querySelector('[data-nav="payments"]'));
+                setTimeout(() => document.getElementById('btnImportPayments')?.click(), 50);
+            });
+        }
+        if (btnSign) {
+            btnSign.addEventListener('click', () => {
+                this.navigate('payments', document.querySelector('[data-nav="payments"]'));
+                setTimeout(() => document.getElementById('btnSignAllPending')?.click(), 50);
+            });
+        }
+        if (btnExport) {
+            btnExport.addEventListener('click', () => {
+                this.navigate('payments', document.querySelector('[data-nav="payments"]'));
+                setTimeout(() => document.getElementById('btnExportPayments')?.click(), 50);
+            });
+        }
+    }
+
+    initPaymentsFilters() {
+        const input = document.getElementById('paymentsQuickSearch');
+        const btnPending = document.getElementById('btnFilterPending');
+        const btnClear = document.getElementById('btnClearPaymentsFilter');
+        if (input) {
+            input.addEventListener('input', () => {
+                clearTimeout(this.paymentsFilterTimer);
+                this.paymentsFilterTimer = setTimeout(() => {
+                    this.paymentFilters.query = input.value || '';
+                    this.renderPaymentsTable();
+                }, 200);
+            });
+        }
+        if (btnPending) {
+            btnPending.addEventListener('click', () => {
+                this.paymentFilters.pendingOnly = !this.paymentFilters.pendingOnly;
+                btnPending.classList.toggle('is-active', this.paymentFilters.pendingOnly);
+                this.renderPaymentsTable();
+            });
+        }
+        if (btnClear) {
+            btnClear.addEventListener('click', () => {
+                this.paymentFilters = { query: '', pendingOnly: false };
+                if (input) input.value = '';
+                if (btnPending) btnPending.classList.remove('is-active');
+                this.renderPaymentsTable();
+            });
+        }
+    }
+
+    normalizeCompany(value) {
+        const v = String(value || '').trim().toLowerCase();
+        if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+        if (v === 'jfx') return 'JFX';
+        if (v === 'dmf') return 'DMF';
+        return value || 'DMF';
+    }
+
+    setCompanyFilter(company) {
+        this.companyFilter = this.normalizeCompany(company);
+        const title = document.getElementById('paymentsTitle');
+        if (title) {
+            title.textContent = `Fluxo de Pagamentos ${this.companyFilter}`;
+        }
+    }
+
+    initAuditFilters() {
+        const input = document.getElementById('auditLogFilter');
+        const btnClear = document.getElementById('btnClearAuditFilter');
+        if (input) {
+            input.addEventListener('input', () => {
+                const v = input.value || '';
+                if (this.core?.audit?.setFilter) {
+                    this.core.audit.setFilter(v);
+                } else {
+                    this.core?.audit?.renderLogs?.();
+                }
+            });
+        }
+        if (btnClear) {
+            btnClear.addEventListener('click', () => {
+                if (input) input.value = '';
+                if (this.core?.audit?.setFilter) {
+                    this.core.audit.setFilter('');
+                } else {
+                    this.core?.audit?.renderLogs?.();
+                }
+            });
+        }
+    }
+
+    getFilteredPayments() {
+        const data = [...(this.core.data.records || [])];
+        const query = String(this.paymentFilters.query || '').trim().toLowerCase();
+        let filtered = data;
+        const company = this.companyFilter;
+        if (company) {
+            filtered = filtered.filter(p => {
+                const c = this.core.data.getPaymentCompany(p);
+                return c === this.normalizeCompany(company);
+            });
+        }
+        if (this.paymentFilters.pendingOnly) {
+            filtered = filtered.filter(p => !p.assinatura);
+        }
+        if (query) {
+            filtered = filtered.filter(p => {
+                const fields = [
+                    p.fornecedor,
+                    p.descricao,
+                    p.centro,
+                    p.categoria,
+                    p.data,
+                    String(p.valor || '')
+                ].map(v => String(v || '').toLowerCase());
+                return fields.some(v => v.includes(query));
+            });
+        }
+        const countEl = document.getElementById('paymentsFilterCount');
+        if (countEl) {
+            countEl.textContent = `Mostrando ${filtered.length} de ${data.length}`;
+        }
+        return filtered;
+    }
+
+    updateDashboardSummary(pendingCount) {
+        const nextAction = document.getElementById('nextActionText');
+        const pendingEl = document.getElementById('pendingCount');
+        if (pendingEl) pendingEl.textContent = pendingCount;
+        if (nextAction) {
+            if (pendingCount > 0) {
+                nextAction.textContent = `Assine ${pendingCount} pagamento(s) pendente(s).`;
+            } else {
+                nextAction.textContent = 'Tudo certo. Nenhum pendente.';
+            }
+        }
+    }
+
+    updateFlowStatusBadges() {
+        const lastSyncEl = document.getElementById('flowLastSync');
+        const lastSigEl = document.getElementById('flowLastSignature');
+        if (lastSyncEl) {
+            lastSyncEl.textContent = this.core.data.lastSyncAt
+                ? `Última sincronização: ${new Date(this.core.data.lastSyncAt).toLocaleTimeString('pt-BR')}`
+                : 'Última sincronização: —';
+        }
+        if (lastSigEl) {
+            const latest = (this.core.data.records || [])
+                .filter(p => p.assinatura?.dataISO)
+                .sort((a, b) => new Date(b.assinatura.dataISO) - new Date(a.assinatura.dataISO))[0];
+            if (latest?.assinatura) {
+                const when = new Date(latest.assinatura.dataISO).toLocaleString('pt-BR');
+                lastSigEl.textContent = `Última assinatura: ${latest.assinatura.usuarioNome} (${when})`;
+            } else {
+                lastSigEl.textContent = 'Última assinatura: —';
+            }
+        }
     }
 
     setupDashboard() {
@@ -1123,6 +1595,8 @@ class UIManager {
         const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
         if (this.core.currentUser) this.core.currentUser.cargo = role;
         document.getElementById('userRoleBadge').innerText = (role || '—').toUpperCase();
+
+        this.setCompanyFilter(this.companyFilter);
 
         if (this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             document.getElementById('adminMenu').classList.remove('hidden');
@@ -1139,6 +1613,9 @@ class UIManager {
         this.renderAdminContent();
         this.applyRolePermissions();
         this.populateBudgetInputs();
+        this.initQuickActions();
+        this.initPaymentsFilters();
+        this.initAuditFilters();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
     }
 
@@ -1217,11 +1694,16 @@ class UIManager {
         if (!this.userSyncTimer) {
             this.userSyncTimer = setInterval(() => {
                 this.syncCurrentUserRole();
-            }, 10000);
+            }, 60000);
         }
     }
 
     async syncCurrentUserRole() {
+        const now = Date.now();
+        if (this.userStatusInFlight) return;
+        if (now - this.userStatusLastAt < this.userStatusMinInterval) return;
+        this.userStatusInFlight = true;
+        this.userStatusLastAt = now;
         try {
             const response = await fetch(`${getApiBase()}/api/auth/user-status`, {
                 cache: 'no-store',
@@ -1245,6 +1727,8 @@ class UIManager {
             }
         } catch (_) {
             // ignore
+        } finally {
+            this.userStatusInFlight = false;
         }
     }
 
@@ -1285,7 +1769,7 @@ class UIManager {
             }).finally(() => {
                 this.flowAutoRefreshBusy = false;
             });
-        }, 5000);
+        }, 20000);
     }
 
     stopFlowAutoRefresh() {
@@ -1300,6 +1784,9 @@ class UIManager {
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.getElementById(`${tab}Tab`).classList.remove('hidden');
         if (activeButton) activeButton.classList.add('active');
+        if (tab === 'centers') {
+            this.renderCenterPermissions();
+        }
     }
 
     switchAuditTab(tab, activeButton = null) {
@@ -1344,6 +1831,7 @@ class UIManager {
             this.renderUsersTable();
         }
         this.renderRolesTable();
+        this.renderCenterPermissions();
     }
 
     applyRolePermissions() {
@@ -1363,6 +1851,10 @@ class UIManager {
         const archiveCompareArea = document.querySelector('.archive-compare');
         const compareBtn = document.getElementById('btnCompareArchives');
         const revokeSelfBtn = document.getElementById('btnRevokeSelf');
+        const signAllBtn = document.getElementById('btnSignAllPending');
+        const quickImportBtn = document.getElementById('btnQuickImport');
+        const quickExportBtn = document.getElementById('btnQuickExport');
+        const quickSignBtn = document.getElementById('btnQuickSign');
 
         const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
@@ -1371,6 +1863,7 @@ class UIManager {
         const canViewArchives = this.core.admin.hasPermission(this.core.currentUser, 'view_archives');
         const canArchiveFlow = this.core.admin.hasPermission(this.core.currentUser, 'archive_flow');
         const canCompareArchives = this.core.admin.hasPermission(this.core.currentUser, 'compare_archives');
+        const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
 
         if (importBtn) {
             importBtn.classList.toggle('hidden', !canImport);
@@ -1383,6 +1876,10 @@ class UIManager {
         if (addPaymentBtn) {
             addPaymentBtn.classList.toggle('hidden', !canAdd);
             addPaymentBtn.disabled = !canAdd;
+        }
+        if (signAllBtn) {
+            signAllBtn.classList.toggle('hidden', !canSign);
+            signAllBtn.disabled = !canSign;
         }
         if (archiveBtn) {
             archiveBtn.classList.toggle('hidden', !canArchiveFlow);
@@ -1407,6 +1904,18 @@ class UIManager {
         }
         if (compareBtn) {
             compareBtn.disabled = !canCompareArchives;
+        }
+        if (quickImportBtn) {
+            quickImportBtn.classList.toggle('hidden', !canImport);
+            quickImportBtn.disabled = !canImport;
+        }
+        if (quickExportBtn) {
+            quickExportBtn.classList.toggle('hidden', !canExport);
+            quickExportBtn.disabled = !canExport;
+        }
+        if (quickSignBtn) {
+            quickSignBtn.classList.toggle('hidden', !canSign);
+            quickSignBtn.disabled = !canSign;
         }
     }
 
@@ -1496,6 +2005,83 @@ class UIManager {
                 }
             });
             body.dataset.boundRoles = 'true';
+        }
+    }
+
+    renderCenterPermissions() {
+        const container = document.getElementById('centerPermissionGrid');
+        if (!container) return;
+        const centers = this.core.data.costCenters || [];
+        const centerList = centers.length ? centers : [];
+        container.innerHTML = this.core.admin.users.map(u => {
+            const rule = this.core.admin.getUserCenterRule(u.id);
+            const selected = new Set((rule.centers || []).map(c => this.core.admin.normalizeCenter(c)));
+            const options = centerList.map(c => {
+                const normalized = this.core.admin.normalizeCenter(c);
+                const checked = selected.has(normalized) ? 'checked' : '';
+                return `
+                    <label class="center-option">
+                        <input type="checkbox" data-center-name="${c}" ${checked}>
+                        <span>${c}</span>
+                    </label>
+                `;
+            }).join('');
+            return `
+                <div class="center-permission-card" data-user-id="${u.id}">
+                    <div class="center-card-header">
+                        <div>
+                            <div class="center-user-name">${u.nome}</div>
+                            <div class="center-user-meta">${u.email} • ${String(u.cargo || '').toUpperCase()}</div>
+                        </div>
+                        <button class="btn btn-ghost" data-cc-action="toggle">Editar</button>
+                    </div>
+                    <div class="center-editor hidden">
+                        <div class="center-mode">
+                            <label>
+                                <input type="radio" name="center-mode-${u.id}" value="all" ${rule.mode === 'all' ? 'checked' : ''}>
+                                Acesso a todos os centros
+                            </label>
+                            <label>
+                                <input type="radio" name="center-mode-${u.id}" value="allow" ${rule.mode === 'allow' ? 'checked' : ''}>
+                                Somente centros selecionados
+                            </label>
+                        </div>
+                        <div class="center-options">
+                            ${options || '<div class="center-empty">Sem centros cadastrados.</div>'}
+                        </div>
+                        <div class="center-actions">
+                            <button class="btn btn-primary" data-cc-action="save">Salvar</button>
+                            <button class="btn btn-ghost" data-cc-action="cancel">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (!container.dataset.boundCenters) {
+            container.addEventListener('click', (event) => {
+                const actionBtn = event.target.closest('[data-cc-action]');
+                if (!actionBtn) return;
+                const card = event.target.closest('.center-permission-card');
+                if (!card) return;
+                const userId = Number(card.getAttribute('data-user-id'));
+                const editor = card.querySelector('.center-editor');
+                const action = actionBtn.getAttribute('data-cc-action');
+                if (action === 'toggle') {
+                    editor?.classList.toggle('hidden');
+                } else if (action === 'cancel') {
+                    editor?.classList.add('hidden');
+                } else if (action === 'save') {
+                    const modeInput = card.querySelector(`input[name="center-mode-${userId}"]:checked`);
+                    const mode = modeInput ? modeInput.value : 'all';
+                    const selected = Array.from(card.querySelectorAll('input[type="checkbox"][data-center-name]:checked'))
+                        .map(i => i.getAttribute('data-center-name'));
+                    this.core.admin.setUserCenterRule(userId, { mode, centers: selected });
+                    showToast('Permissões de centros atualizadas.', 'success');
+                    editor?.classList.add('hidden');
+                }
+            });
+            container.dataset.boundCenters = 'true';
         }
     }
 
@@ -1819,6 +2405,15 @@ class UIManager {
         }
     }
 
+    openCenterAssignmentModal(centerName) {
+        const modal = document.getElementById('centerAssignModal');
+        if (!modal) return;
+        const labelEl = document.getElementById('centerAssignName');
+        if (labelEl) labelEl.textContent = centerName;
+        modal.dataset.centerName = centerName;
+        modal.classList.add('is-open');
+    }
+
     populateCostCentersDatalist(){ // ALTERADO
       const el = document.getElementById('centrosDataList');
       if(!el) return;
@@ -1933,15 +2528,18 @@ class UIManager {
             this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const publicBase = `${getApiBase()}/verify.html?id=`;
 
-        body.innerHTML = this.core.data.records.map(p => {
+        const rows = this.getFilteredPayments ? this.getFilteredPayments() : this.core.data.records;
+
+        body.innerHTML = rows.map(p => {
             const assinaturaStr = p.assinatura
                 ? `Assinado por: ${p.assinatura.usuarioNome}` // ALTERADO
                 : '-'; // ALTERADO
 
-            const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
-            const acoesHtml = p.assinatura
-                ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
-                : (canSign ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
+        const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
+        const canSignCenter = this.core.admin.canSignCenter(this.core.currentUser, p.centro);
+        const acoesHtml = p.assinatura
+            ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
+            : (canSign && canSignCenter ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
             const qrHtml = (canSeeQr && p.assinatura?.hash)
                 ? `<div class="qr-box" data-qr="${publicBase}${p.assinatura.hash}"></div>`
                 : '';
@@ -1951,9 +2549,9 @@ class UIManager {
                     <td><strong>${p.fornecedor || ''}</strong></td>
                     <td>${p.data || ''}</td>
                     <td>${(p.descricao || '').trim() || '—'}</td>
-                    <td>R$ ${(Number(p.valor)||0).toLocaleString('pt-BR')}</td>
-                    <td>${p.centro || ''}</td>
+                    <td>R$ ${Number(p.valor || 0).toLocaleString('pt-BR')}</td>
                     <td>${(p.categoria || '').trim() || '—'}</td>
+                    <td>${p.centro || ''}</td>
                     <td><span>${p.assinatura ? 'Assinado' : 'Pendente'}</span></td>
                     <td><small>${assinaturaStr}</small>${qrHtml}</td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
@@ -1964,6 +2562,7 @@ class UIManager {
         this.updateStats && this.updateStats(); // manter comportamento existente // ALTERADO
         this.renderCompanyTotals && this.renderCompanyTotals();
         this.renderSignatureQrCodes && this.renderSignatureQrCodes();
+        this.updateFlowStatusBadges && this.updateFlowStatusBadges();
 
         if (!body.dataset.boundPayments) {
             body.addEventListener('click', (event) => {
@@ -2013,26 +2612,48 @@ class UIManager {
         data.forEach(p => total += Number(p.valor) || 0);
         this.totalBruto = total;
         document.getElementById('totalBruto').innerText = `R$ ${total.toLocaleString('pt-BR')}`;
-        document.getElementById('totalAssinados').innerText = data.filter(p => p.assinatura).length;
-        document.getElementById('totalPendentes').innerText = data.filter(p => !p.assinatura).length;
+        const signed = data.filter(p => p.assinatura).length;
+        const pending = data.filter(p => !p.assinatura).length;
+        document.getElementById('totalAssinados').innerText = signed;
+        document.getElementById('totalPendentes').innerText = pending;
+        this.updateDashboardSummary && this.updateDashboardSummary(pending);
     }
 
     renderCompanyTotals() {
         const container = document.getElementById('companyTotalsBody');
         if (!container) return;
-        const totals = this.core.data.getCompanyTotals();
+        const totals = this.core.data.getCompanyCenterTotals();
+        const companies = Object.keys(totals);
+        if (!companies.length) {
+            container.innerHTML = '<div class="company-total-empty">Sem dados para exibir.</div>';
+            return;
+        }
 
-        const rows = Object.entries(totals)
-            .filter(([, total]) => total > 0)
-            .map(([company, total]) => `
-                <div class="company-total-row">
-                    <span>${company}</span>
-                    <strong>R$ ${total.toLocaleString('pt-BR')}</strong>
+        const rows = companies.map((company) => {
+            const entry = totals[company];
+            const centers = Object.entries(entry.centers)
+                .filter(([, total]) => total > 0)
+                .sort((a, b) => b[1] - a[1])
+                .map(([center, total]) => `
+                    <div class="company-total-row company-total-center">
+                        <span>${center}</span>
+                        <strong>R$ ${total.toLocaleString('pt-BR')}</strong>
+                    </div>
+                `)
+                .join('');
+
+            return `
+                <div class="company-total-group">
+                    <div class="company-total-row company-total-header">
+                        <span>${company}</span>
+                        <strong>R$ ${entry.total.toLocaleString('pt-BR')}</strong>
+                    </div>
+                    ${centers}
                 </div>
-            `)
-            .join('');
+            `;
+        }).join('');
 
-        container.innerHTML = rows || '<div class="company-total-empty">Sem dados para exibir.</div>';
+        container.innerHTML = rows;
     }
 
     parseValorInput(v) { // ALTERADO
@@ -2057,6 +2678,7 @@ class UIManager {
       const descricao = (fd.get('descricao') || '').trim();
       const valor = this.parseValorInput ? this.parseValorInput(fd.get('valor')) : Number(String(fd.get('valor')||'').replace(/\./g,'').replace(',','.')) || 0;
       let centro = (fd.get('centro') || 'Geral').trim() || 'Geral';
+      const categoria = (fd.get('categoria') || '').trim();
 
       if (!fornecedor || !data || !valor) {
         alert('Preencha Fornecedor, Data e Valor.');
@@ -2075,15 +2697,20 @@ class UIManager {
         this.populateCostCentersDatalist(); // atualiza sugestões // ALTERADO
       }
 
-      this.core.data.addPayment({ fornecedor, data, descricao, valor, centro }); // ALTERADO
+      this.core.data.addPayment({ fornecedor, data, descricao, valor, centro, categoria }); // ALTERADO
       if (window.assistant) window.assistant.addLearningQuestion(`Quantos pagamentos estão aguardando assinatura?`, `Há ${this.core.data.records.filter(p => !p.assinatura).length} pagamentos aguardando assinatura.`); // ALTERADO
       form.reset();
       this.closeModal('addPaymentModal');
     } // ALTERADO
 
     initCharts() {
-        const ctx = document.getElementById('financeChart').getContext('2d');
-        new Chart(ctx, {
+        const canvas = document.getElementById('financeChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (this.financeChart) {
+            this.financeChart.destroy();
+        }
+        this.financeChart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai'],
@@ -2105,6 +2732,7 @@ class AuditLogger {
     constructor(core) {
         this.core = core;
         this.logs = JSON.parse(localStorage.getItem(core.storageKeys.LOGS)) || [];
+        this.filterText = '';
         window.DMF_CONTEXT.logs = this.logs;
         console.log('DMF_CONTEXT after AuditLogger init:', window.DMF_CONTEXT);
     }
@@ -2130,9 +2758,21 @@ class AuditLogger {
     renderLogs() {
         const body = document.getElementById('auditBody');
         if(!body) return;
-        body.innerHTML = this.logs.slice(0, 50).map(l => `
+        const query = String(this.filterText || '').trim().toLowerCase();
+        const filtered = query
+            ? this.logs.filter(l => {
+                const hay = `${l.userEmail || ''} ${l.acao || ''} ${l.detalhes || ''}`.toLowerCase();
+                return hay.includes(query);
+            })
+            : this.logs;
+        body.innerHTML = filtered.slice(0, 50).map(l => `
             <tr><td>${new Date(l.dataISO).toLocaleString()}</td><td>${l.userEmail || 'Sistema'}</td><td><strong>${l.acao}</strong></td><td>${l.detalhes || ''}</td></tr>
         `).join('');
+    }
+
+    setFilter(value) {
+        this.filterText = value || '';
+        this.renderLogs();
     }
 
     async searchSignatureById() {
@@ -2258,9 +2898,12 @@ class AdminManager {
         ensureRole('admin', ['all']);
         ensureRole('gestor', ['sign_payments']);
         ensureRole('user', []);
+        this.centerPermissions = JSON.parse(localStorage.getItem(core.storageKeys.COST_CENTER_RULES) || '{}');
         this.saveUsers();
         this.saveRoles();
+        this.saveCenterPermissions();
         window.DMF_CONTEXT.usuarios = this.users;
+        window.DMF_CONTEXT.centerPermissions = this.centerPermissions;
         window.DMF_BRAIN.usuarios = this.users;
         console.log('DMF_CONTEXT after AdminManager init:', window.DMF_CONTEXT);
         console.log('DMF_BRAIN after AdminManager init:', window.DMF_BRAIN);
@@ -2366,6 +3009,40 @@ class AdminManager {
 
     saveRoles() {
         localStorage.setItem(this.core.storageKeys.ROLES, JSON.stringify(this.roles));
+    }
+
+    saveCenterPermissions() {
+        localStorage.setItem(this.core.storageKeys.COST_CENTER_RULES, JSON.stringify(this.centerPermissions || {}));
+    }
+
+    normalizeCenter(center) {
+        return String(center || '').trim().toLowerCase();
+    }
+
+    getUserCenterRule(userId) {
+        return this.centerPermissions[String(userId)] || { mode: 'all', centers: [] };
+    }
+
+    setUserCenterRule(userId, rule) {
+        const normalizedCenters = Array.isArray(rule.centers)
+            ? rule.centers.map(c => this.normalizeCenter(c)).filter(Boolean)
+            : [];
+        this.centerPermissions[String(userId)] = {
+            mode: rule.mode === 'allow' ? 'allow' : 'all',
+            centers: Array.from(new Set(normalizedCenters))
+        };
+        this.saveCenterPermissions();
+        window.DMF_CONTEXT.centerPermissions = this.centerPermissions;
+        this.core.audit.log('ATUALIZAÇÃO CENTROS', `Permissões de centro atualizadas para usuário ${userId}.`);
+    }
+
+    canSignCenter(user, center) {
+        if (!user) return false;
+        if (this.hasPermission(user, 'admin_access')) return true;
+        const rule = this.getUserCenterRule(user.id);
+        if (!rule || rule.mode === 'all') return true;
+        const normalized = this.normalizeCenter(center);
+        return rule.centers.includes(normalized);
     }
 
     async createUser(nome, email, senha, cargo, usuario = null) {
@@ -3151,7 +3828,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const exportPaymentsButton = document.getElementById('btnExportPayments');
     if (exportPaymentsButton) {
         exportPaymentsButton.addEventListener('click', function () {
-            system?.data?.export?.();
+            system?.data?.export?.(system?.data?.currentCompany || system?.ui?.companyFilter || null);
         });
     }
 
@@ -3183,11 +3860,19 @@ document.addEventListener('DOMContentLoaded', function() {
     const refreshPaymentsButton = document.getElementById('btnRefreshPayments');
     if (refreshPaymentsButton) {
         refreshPaymentsButton.addEventListener('click', function () {
-            system?.data?.loadFromBackend?.().then(() => {
+            system?.data?.loadFromBackend?.(true).then(() => {
                 system?.ui?.renderPaymentsTable?.();
                 system?.ui?.updateStats?.();
                 system?.ui?.initCharts?.();
             });
+        });
+    }
+
+    const signAllPendingButton = document.getElementById('btnSignAllPending');
+    if (signAllPendingButton) {
+        signAllPendingButton.addEventListener('click', function () {
+            if (!confirm('Deseja assinar todos os pagamentos pendentes?')) return;
+            system?.data?.signAllPending?.();
         });
     }
 
@@ -3245,6 +3930,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    document.querySelectorAll('[data-center-company]').forEach(button => {
+        button.addEventListener('click', function () {
+            const company = this.getAttribute('data-center-company');
+            const modal = document.getElementById('centerAssignModal');
+            const center = modal?.dataset?.centerName;
+            if (center && company) {
+                system?.data?.setCenterCompany?.(center, company);
+                system?.ui?.closeModal?.('centerAssignModal');
+                system?.ui?.renderPaymentsTable?.();
+                system?.ui?.updateStats?.();
+            }
+        });
+    });
+
     // Navigation event listeners
     document.querySelectorAll('[data-nav]').forEach(button => {
         button.addEventListener('click', function() {
@@ -3252,6 +3951,18 @@ document.addEventListener('DOMContentLoaded', function() {
             system.ui.navigate(viewId, this);
         });
     });
+
+    const paymentsToggle = document.getElementById('btnPaymentsToggle');
+    const paymentsSubmenu = document.getElementById('paymentsSubmenu');
+    const paymentsToggleIcon = document.getElementById('paymentsToggleIcon');
+    if (paymentsToggle && paymentsSubmenu && paymentsToggleIcon) {
+        paymentsToggle.addEventListener('click', function() {
+            paymentsSubmenu.classList.toggle('hidden');
+            const isOpen = !paymentsSubmenu.classList.contains('hidden');
+            paymentsToggle.classList.toggle('is-open', isOpen);
+            paymentsToggle.setAttribute('aria-expanded', String(isOpen));
+        });
+    }
 
     // Admin tab event listeners
     document.querySelectorAll('[data-admin-tab]').forEach(button => {
@@ -3406,7 +4117,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const signatureSearchButton = document.getElementById('signatureSearchButton');
     if (signatureSearchButton) {
         signatureSearchButton.addEventListener('click', function () {
-            system.ui.searchSignatureById();
+            system.audit.searchSignatureById();
         });
     }
 
@@ -3414,7 +4125,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (signatureSearchInput) {
         signatureSearchInput.addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
-                system.ui.searchSignatureById();
+                system.audit.searchSignatureById();
             }
         });
     }

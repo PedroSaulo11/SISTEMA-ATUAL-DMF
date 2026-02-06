@@ -33,6 +33,8 @@ const {
   replaceFlowArchives,
   insertLoginAudit,
   listLoginAudits,
+  insertAuditEvent,
+  listAuditEvents,
   getUserSession,
   setUserSessionRevokedAfter,
   insertWebhook
@@ -44,6 +46,14 @@ const PORT = process.env.PORT || 3001;
 const EXTERNAL_API_TIMEOUT_MS = Number(process.env.EXTERNAL_API_TIMEOUT_MS || 10000);
 const CONTA_AZUL_TIMEOUT_MS = Number(process.env.CONTA_AZUL_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
 const COBLI_TIMEOUT_MS = Number(process.env.COBLI_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
+
+function normalizeCompany(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+  if (v === 'jfx') return 'JFX';
+  if (v === 'dmf') return 'DMF';
+  return value ? String(value).trim() : null;
+}
 
 const contaAzulClient = axios.create({ timeout: CONTA_AZUL_TIMEOUT_MS });
 const cobliClient = axios.create({ timeout: COBLI_TIMEOUT_MS });
@@ -701,6 +711,48 @@ app.get('/api/audit/logins', authenticateToken, authorizeRole('admin'), async (r
   }
 });
 
+app.post('/api/audit/events', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const action = String(req.body?.action || '').trim();
+    if (!action) {
+      return res.status(400).json({ error: 'Action is required' });
+    }
+    const details = req.body?.details ? String(req.body.details) : null;
+    const metadata = req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null;
+    await insertAuditEvent({
+      action,
+      details,
+      username: req.user?.username || null,
+      userId: req.user?.id || null,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'] || null,
+      metadata
+    });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Error inserting audit event', { error: error.message });
+    res.status(500).json({ error: 'Failed to insert audit event' });
+  }
+});
+
+app.get('/api/audit/events', authenticateToken, authorizeRole('admin'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const limit = Number(req.query.limit || 200);
+    const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 1000) : 200;
+    const items = await listAuditEvents(safeLimit);
+    res.json({ items });
+  } catch (error) {
+    logger.error('Error listing audit events', { error: error.message });
+    res.status(500).json({ error: 'Failed to list audit events' });
+  }
+});
+
 app.post('/api/events/budget-exceeded', authenticateToken, authorizeRole('admin'), async (req, res) => {
   try {
     emitEventWebhook('budget_exceeded', {
@@ -762,7 +814,8 @@ app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), async (r
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
     }
-    const payments = await listFlowPayments();
+    const company = normalizeCompany(req.query.company);
+    const payments = await listFlowPayments(company);
     res.json({ payments });
   } catch (error) {
     logger.error('Error listing flow payments', { error: error.message });
@@ -776,8 +829,10 @@ app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), 
       return res.status(503).json({ error: 'Database not ready' });
     }
     const items = Array.isArray(req.body) ? req.body : (req.body?.payments || []);
+    const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
     const normalized = items.map(item => ({
       id: String(item.id || crypto.randomUUID()),
+      company,
       fornecedor: item.fornecedor || 'N/A',
       data: item.data || null,
       descricao: item.descricao || '',
@@ -788,7 +843,7 @@ app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), 
       created_at: new Date(),
       updated_at: new Date()
     }));
-    await replaceFlowPayments(normalized);
+    await replaceFlowPayments(normalized, company);
     res.json({ success: true, count: normalized.length });
   } catch (error) {
     logger.error('Error importing flow payments', { error: error.message });
@@ -802,8 +857,10 @@ app.post('/api/flow-payments', authenticateToken, authorizeRole('user'), async (
       return res.status(503).json({ error: 'Database not ready' });
     }
     const item = req.body || {};
+    const company = normalizeCompany(req.query.company || item.company) || 'DMF';
     const payment = {
       id: String(item.id || crypto.randomUUID()),
+      company,
       fornecedor: item.fornecedor || 'N/A',
       data: item.data || null,
       descricao: item.descricao || '',
@@ -829,13 +886,14 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
     }
     const paymentId = req.params.id;
     const assinatura = req.body?.assinatura || null;
-    const updated = await updateFlowPayment(paymentId, { assinatura });
-    const payments = await listFlowPayments();
+    const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+    const updated = await updateFlowPayment(paymentId, { assinatura }, company);
+    const payments = await listFlowPayments(company);
     const withChain = applyChainHashes(payments);
     await Promise.all(
       withChain
         .filter(p => p?.assinatura?.chain_hash)
-        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }))
+        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }, company))
     );
     const refreshed = withChain.find(p => String(p.id) === String(paymentId)) || updated;
     emitEventWebhook('payment_signed', {
@@ -856,7 +914,8 @@ app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), async (r
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
     }
-    const archives = await listFlowArchives();
+    const company = normalizeCompany(req.query.company);
+    const archives = await listFlowArchives(company);
     const start = req.query.start ? new Date(String(req.query.start)) : null;
     const end = req.query.end ? new Date(String(req.query.end)) : null;
     let filtered = archives;
@@ -878,7 +937,8 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
     }
-    const payments = await listFlowPayments();
+    const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+    const payments = await listFlowPayments(company);
     if (!payments.length) {
       return res.status(400).json({ error: 'Nenhum pagamento para arquivar.' });
     }
@@ -893,22 +953,23 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
     const labelDate = now.toLocaleDateString('pt-BR');
     const displayName = (req.user?.name || req.user?.username || '').trim();
     const label = displayName
-      ? `Fluxo de Pagamentos (${labelDate}) - ${displayName}`
-      : `Fluxo de Pagamentos (${labelDate})`;
+      ? `Fluxo ${company} (${labelDate}) - ${displayName}`
+      : `Fluxo ${company} (${labelDate})`;
     const withChain = applyChainHashes(payments);
     await Promise.all(
       withChain
         .filter(p => p?.assinatura?.chain_hash)
-        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }))
+        .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }, company))
     );
     const archive = await createFlowArchive({
       id: crypto.randomUUID(),
       label,
+      company,
       payments: withChain,
       createdBy: req.user?.username || null,
       count: withChain.length
     });
-    await replaceFlowPayments([]);
+    await replaceFlowPayments([], company);
     emitEventWebhook('flow_archived', {
       archiveId: archive?.id,
       label: archive?.label,
@@ -1483,6 +1544,7 @@ app.post('/api/restore', authenticateToken, authorizeRole('admin'), async (req, 
 
     await replaceFlowPayments(payments.map(p => ({
       id: String(p.id),
+      company: normalizeCompany(p.company) || 'DMF',
       fornecedor: p.fornecedor || 'N/A',
       data: p.data || null,
       descricao: p.descricao || '',
@@ -1497,6 +1559,7 @@ app.post('/api/restore', authenticateToken, authorizeRole('admin'), async (req, 
     await replaceFlowArchives(archives.map(a => ({
       id: String(a.id),
       label: a.label,
+      company: normalizeCompany(a.company) || null,
       payments: a.payments || [],
       created_by: a.created_by || null,
       count: Number(a.count) || 0,

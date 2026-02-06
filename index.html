@@ -35,7 +35,15 @@
         </div>
         <nav class="sidebar-nav">
             <button class="btn-side active" data-nav="dashboard">Dashboard</button>
-            <button class="btn-side" data-nav="payments">Fluxo de Pagamentos</button>
+            <button id="btnPaymentsToggle" class="btn-side btn-side-toggle" type="button" aria-expanded="false">
+                <span>Fluxo de Pagamentos</span>
+                <span id="paymentsToggleIcon" class="toggle-icon" aria-hidden="true"></span>
+            </button>
+            <div id="paymentsSubmenu" class="sidebar-submenu hidden">
+                <button class="btn-side btn-sub" data-nav="payments" data-company="Real Energy">Fluxo de Pagamentos Real Energy</button>
+                <button class="btn-side btn-sub" data-nav="payments" data-company="DMF">Fluxo de Pagamentos DMF</button>
+                <button class="btn-side btn-sub" data-nav="payments" data-company="JFX">Fluxo de Pagamentos JFX</button>
+            </div>
             <button class="btn-side" data-nav="audit">Logs de Auditoria</button>
             <button id="adminMenu" class="btn-side hidden" data-nav="admin">Administração</button>
             <button class="btn-side" data-nav="assistente">Assistente</button>
@@ -47,16 +55,42 @@
 
     <main class="main-content">
         <section id="dashboard" class="view">
-            <div class="card">
+            <div class="card dashboard-card">
                 <h2>Visão Geral Financeira</h2>
-                <div class="stats-grid">
-                    <div class="stat-item">Total Bruto<br><span id="totalBruto">R$ 0,00</span></div>
-                    <div class="stat-item">Assinados<br><span id="totalAssinados">0</span></div>
-                    <div class="stat-item">Aguardando<br><span id="totalPendentes">0</span></div>
+                <div class="dashboard-summary">
+                    <div class="summary-left">
+                        <div class="summary-title">Resumo do dia</div>
+                        <div id="nextActionText" class="summary-action">Tudo certo. Nenhum pendente.</div>
+                        <div class="summary-meta">Pendentes: <span id="pendingCount">0</span></div>
+                    </div>
+                    <div class="summary-actions">
+                        <button id="btnQuickImport" class="btn btn-primary">Importar</button>
+                        <button id="btnQuickSign" class="btn btn-ghost">Assinar pendentes</button>
+                        <button id="btnQuickExport" class="btn btn-ghost">Exportar XLSX</button>
+                    </div>
                 </div>
-                <canvas id="financeChart" height="100"></canvas>
+                <div class="stats-grid dashboard-stats">
+                    <div class="stat-card">
+                        <div class="stat-title">Total Bruto</div>
+                        <div class="stat-value" id="totalBruto">R$ 0,00</div>
+                        <div class="stat-meta">Fluxo atual</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Assinados</div>
+                        <div class="stat-value" id="totalAssinados">0</div>
+                        <div class="stat-meta">Pagamentos validados</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Aguardando</div>
+                        <div class="stat-value" id="totalPendentes">0</div>
+                        <div class="stat-meta">Pendentes de assinatura</div>
+                    </div>
+                </div>
+                <div class="chart-panel">
+                    <canvas id="financeChart" height="100"></canvas>
+                </div>
             </div>
-            <div class="card">
+            <div class="card dashboard-card">
                 <div class="flex-header">
                     <h2>Relatórios Mensais</h2>
                     <div class="actions">
@@ -99,17 +133,22 @@
         <section id="payments" class="view hidden">
             <div class="card">
                 <div class="flex-header">
-                    <h2>Fluxo de Pagamentos</h2>
+                    <h2 id="paymentsTitle">Fluxo de Pagamentos</h2>
                     <div class="actions">
                         <button id="btnClearPayments" class="btn btn-danger">Remover Todo Fluxo</button>
                         <button id="btnExportPayments" class="btn btn-ghost">Exportar XLSX</button>
                         <button id="btnImportPayments" class="btn btn-primary">Importar Conta Azul</button>
                         <button id="btnRefreshPayments" class="btn btn-ghost">Recarregar do servidor</button>
+                        <button id="btnSignAllPending" class="btn btn-ghost">Assinar pendentes</button>
                         <button id="btnAddPayment" class="btn btn-primary">Adicionar Pagamento</button> <!-- ALTERADO -->
                     </div>
                 </div>
                 <div id="flowSyncStatus" class="flow-sync-status">Sincronizando com o servidor...</div>
-                <input type="file" id="fileInput" accept=".xlsx" class="hidden">
+                <div class="flow-status-row">
+                    <span id="flowLastSync" class="status-pill">Última sincronização: —</span>
+                    <span id="flowLastSignature" class="status-pill">Última assinatura: —</span>
+                </div>
+                <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden">
                 
                 <div class="admin-tabs payments-tabs">
                     <button class="tab-btn active" data-payments-tab="current">Fluxo Atual</button>
@@ -117,6 +156,12 @@
                 </div>
 
                 <div id="paymentsCurrentTab" class="payments-tab-content">
+                    <div class="payments-filters">
+                        <input type="text" id="paymentsQuickSearch" class="styled-input" placeholder="Buscar por fornecedor, centro, categoria, valor...">
+                        <button id="btnFilterPending" class="btn btn-ghost">Somente pendentes</button>
+                        <button id="btnClearPaymentsFilter" class="btn btn-ghost">Limpar</button>
+                        <div id="paymentsFilterCount" class="filter-count">Mostrando 0</div>
+                    </div>
                     <div class="data-table-wrapper data-table-spaced">
                         <table id="paymentsTable">
                             <thead>
@@ -125,8 +170,8 @@
                                     <th>Data</th>
                                     <th>Descrição</th>
                                     <th>Valor</th>
-                                    <th>Centro de Custo</th>
                                     <th>Categoria</th>
+                                    <th>Centro de Custo</th>
                                     <th>Status</th>
                                     <th>Assinatura</th>
                                     <th>Ações</th>
@@ -189,6 +234,10 @@
                 </div>
                 <div id="auditContent">
                     <div id="auditLogsTab" class="audit-tab-content">
+                        <div class="audit-filters">
+                            <input type="text" id="auditLogFilter" class="styled-input" placeholder="Filtrar por usuário ou ação...">
+                            <button id="btnClearAuditFilter" class="btn btn-ghost">Limpar</button>
+                        </div>
                         <table id="auditLogTable">
                             <thead>
                                 <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
@@ -222,6 +271,7 @@
                 <div class="admin-tabs">
                     <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
                     <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
+                    <button class="tab-btn" data-admin-tab="centers">Permissões Centros</button>
                     <button class="tab-btn" data-admin-tab="backup">Backup/Restore</button>
                 </div>
                 <div id="adminContent">
@@ -234,6 +284,10 @@
                         <h3>Cargos e Permissões</h3>
                         <button id="btnCreateRole" class="btn btn-primary">Criar Novo Cargo</button>
                         <div id="rolesGrid"></div>
+                    </div>
+                    <div id="centersTab" class="admin-tab-content hidden">
+                        <h3>Permissões por Centro de Custo</h3>
+                        <div id="centerPermissionGrid" class="center-permission-grid"></div>
                     </div>
                     <div id="backupTab" class="admin-tab-content hidden">
                         <h3>Backup e Restauração</h3>
@@ -264,20 +318,43 @@
         <section id="cobli" class="view hidden">
             <div class="card">
                 <h2>Painel Cobli</h2>
-                <div class="stats-grid">
-                    <div class="stat-item">Veículos Cadastrados<br><span id="veiculosCadastrados">0</span></div>
-                    <div class="stat-item">Locais de Interesse<br><span id="locaisInteresse">0</span></div>
-                    <div class="stat-item">Eventos Velocidade Veículo<br><span id="eventosVelocidadeVeiculo">0</span></div>
-                    <div class="stat-item">Eventos Velocidade Via<br><span id="eventosVelocidadeVia">0</span></div>
-                    <div class="stat-item">Rotas com Veículo<br><span id="rotasComVeiculo">0</span></div>
-                    <div class="stat-item">Rotas sem Veículo<br><span id="rotasSemVeiculo">0</span></div>
-                    <div class="stat-item">Produtividade Média Frota<br><span id="produtividadeMedia">0%</span></div>
+                <div class="stats-grid cobli-stats">
+                    <div class="stat-card">
+                        <div class="stat-title">Veículos Cadastrados</div>
+                        <div class="stat-value" id="veiculosCadastrados">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Locais de Interesse</div>
+                        <div class="stat-value" id="locaisInteresse">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Eventos Velocidade Veículo</div>
+                        <div class="stat-value" id="eventosVelocidadeVeiculo">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Eventos Velocidade Via</div>
+                        <div class="stat-value" id="eventosVelocidadeVia">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Rotas com Veículo</div>
+                        <div class="stat-value" id="rotasComVeiculo">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Rotas sem Veículo</div>
+                        <div class="stat-value" id="rotasSemVeiculo">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Produtividade Média Frota</div>
+                        <div class="stat-value" id="produtividadeMedia">0%</div>
+                    </div>
                 </div>
                 <div id="mapContainer" class="map-container"></div>
             </div>
         </section>
     </main>
 </div>
+
+<div id="toastContainer" class="toast-container"></div>
 
 <!-- Modal for Creating User -->
 <div id="createUserModal" class="modal">
@@ -472,7 +549,7 @@
 
 <!-- Modal: Adicionar Pagamento --> <!-- ALTERADO -->
 <div id="addPaymentModal" class="modal"> <!-- ALTERADO -->
-  <div class="modal-content">
+  <div class="modal-content add-payment-card">
     <span class="close" data-close-modal="addPaymentModal">&times;</span>
     <h3>Adicionar Pagamento</h3>
     <form id="addPaymentForm"> <!-- ALTERADO -->
@@ -497,8 +574,34 @@
         <input type="text" id="addCentro" name="centro" placeholder="Geral" required list="centrosDataList"> <!-- ALTERADO -->
         <datalist id="centrosDataList"></datalist> <!-- ALTERADO -->
       </div>
-      <button type="submit" class="btn btn-primary">Adicionar</button> <!-- ALTERADO -->
+      <div class="form-group">
+        <label for="addCategoria">Categoria:</label>
+        <input type="text" id="addCategoria" name="categoria" placeholder="Categoria"> <!-- ALTERADO -->
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-danger" data-close-modal="addPaymentModal">Cancelar</button> <!-- ALTERADO -->
+        <button type="submit" class="btn btn-primary">Adicionar</button> <!-- ALTERADO -->
+      </div>
     </form>
+  </div>
+</div>
+
+<!-- Modal: Novo Centro de Custo -->
+<div id="centerAssignModal" class="modal">
+  <div class="modal-content center-assign-card">
+    <span class="close" data-close-modal="centerAssignModal">&times;</span>
+    <h3>Novo Centro de Custo Identificado</h3>
+    <p>Encontramos um novo Centro de Custo:</p>
+    <div class="center-assign-highlight" id="centerAssignName">—</div>
+    <p>Selecione em qual empresa este centro deve ser encaixado:</p>
+    <div class="center-assign-actions">
+      <button type="button" class="btn btn-primary" data-center-company="DMF">DMF</button>
+      <button type="button" class="btn btn-ghost" data-center-company="JFX">JFX</button>
+      <button type="button" class="btn btn-ghost" data-center-company="Real Energy">Real Energy</button>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-danger" data-close-modal="centerAssignModal">Fechar</button>
+    </div>
   </div>
 </div>
 
