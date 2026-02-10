@@ -76,6 +76,20 @@ function normalizeRole(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+async function isAllowedRole(role) {
+  if (role === undefined || role === null) return true;
+  const normalized = normalizeRole(role);
+  if (!normalized) return false;
+  if (DEFAULT_ROLE_PERMISSIONS[normalized]) return true;
+  if (!isDbReady()) return true;
+  try {
+    const roles = await listRoles();
+    return roles.some(r => normalizeRole(r.name) === normalized);
+  } catch (error) {
+    return false;
+  }
+}
+
 const PERMISSIONS_ENFORCED = process.env.PERMISSIONS_ENFORCED === 'true';
 const ROLE_CACHE_TTL_MS = Number(process.env.ROLE_CACHE_TTL_MS || 30000);
 const DEFAULT_ROLE_PERMISSIONS = {
@@ -892,7 +906,7 @@ app.post('/api/auth/register', [
   body('username').isLength({ min: 3, max: 50 }).trim().escape().withMessage('Username must be 3-50 characters'),
   body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('role').optional().isIn(['user', 'gestor', 'admin']).withMessage('Invalid role'),
+  body('role').optional().custom(isAllowedRole).withMessage('Invalid role'),
   body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
 ], async (req, res) => {
   try {
@@ -2161,7 +2175,7 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePe
   param('id').isInt().withMessage('Valid user ID required'),
   body('username').optional().isLength({ min: 3, max: 50 }).trim().escape(),
   body('email').optional().isEmail().normalizeEmail(),
-  body('role').optional().isIn(['user', 'gestor', 'admin']),
+  body('role').optional().custom(isAllowedRole),
   body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
   body('password').optional().isLength({ min: 8 })
 ], async (req, res) => {

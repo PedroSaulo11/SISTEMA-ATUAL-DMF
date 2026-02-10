@@ -540,18 +540,15 @@ class DataProcessor {
                 return true;
             }
             const data = await response.json();
-            const previousOrder = new Map((this.records || []).map((p, idx) => [p.id, idx]));
             const incoming = (data.payments || []).map(p => ({
                 ...p,
                 company: p.company || company
             }));
             incoming.sort((a, b) => {
-                const aIdx = previousOrder.has(a.id) ? previousOrder.get(a.id) : Number.MAX_SAFE_INTEGER;
-                const bIdx = previousOrder.has(b.id) ? previousOrder.get(b.id) : Number.MAX_SAFE_INTEGER;
-                if (aIdx !== bIdx) return aIdx - bIdx;
                 const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
                 const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-                return aTime - bTime;
+                if (aTime !== bTime) return aTime - bTime;
+                return String(a.id).localeCompare(String(b.id));
             });
             this.records = incoming;
             this.currentCompany = company;
@@ -891,34 +888,6 @@ class DataProcessor {
         // Atualizar UI
         this.core?.ui?.renderPaymentsTable?.(); // ALTERADO
         return true; // ALTERADO
-    }
-
-    async signAllPending() {
-        if (!this.core.currentUser) {
-            alert('Você precisa estar logado para assinar pagamentos.');
-            return false;
-        }
-        if (!this.core.admin.hasPermission(this.core.currentUser, 'sign_payments')) {
-            alert('Você não tem permissão para assinar pagamentos.');
-            return false;
-        }
-        const pendentes = (this.records || []).filter(r => !r.assinatura)
-            .filter(r => this.core.admin.canSignCenter(this.core.currentUser, r.centro));
-        if (!pendentes.length) {
-            showToast('Nenhum pagamento pendente para assinar.', 'info');
-            return true;
-        }
-        let signed = 0;
-        for (const p of pendentes) {
-            try {
-                const ok = await this.sign(p.id);
-                if (ok) signed += 1;
-            } catch (_) {
-                // continue
-            }
-        }
-        showToast(`Assinaturas concluídas: ${signed}/${pendentes.length}`, 'success');
-        return true;
     }
 
     save() {
@@ -2036,7 +2005,6 @@ class UIManager {
         const archiveCompareArea = document.querySelector('.archive-compare');
         const compareBtn = document.getElementById('btnCompareArchives');
         const revokeSelfBtn = document.getElementById('btnRevokeSelf');
-        const signAllBtn = document.getElementById('btnSignAllPending');
         const quickImportBtn = document.getElementById('btnQuickImport');
         const quickExportBtn = document.getElementById('btnQuickExport');
 
@@ -2060,10 +2028,6 @@ class UIManager {
         if (addPaymentBtn) {
             addPaymentBtn.classList.toggle('hidden', !canAdd);
             addPaymentBtn.disabled = !canAdd;
-        }
-        if (signAllBtn) {
-            signAllBtn.classList.toggle('hidden', !canSign);
-            signAllBtn.disabled = !canSign;
         }
         if (archiveBtn) {
             archiveBtn.classList.toggle('hidden', !canArchiveFlow);
@@ -3537,7 +3501,11 @@ class AdminManager {
     }
 
     normalizeCenter(center) {
-        return String(center || '').trim().toLowerCase();
+        return String(center || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim()
+            .toLowerCase();
     }
 
     getUserCenterRule(userId) {
@@ -4394,14 +4362,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 system?.ui?.updateStats?.();
                 system?.ui?.initCharts?.();
             });
-        });
-    }
-
-    const signAllPendingButton = document.getElementById('btnSignAllPending');
-    if (signAllPendingButton) {
-        signAllPendingButton.addEventListener('click', function () {
-            if (!confirm('Deseja assinar todos os pagamentos pendentes?')) return;
-            system?.data?.signAllPending?.();
         });
     }
 

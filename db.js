@@ -462,7 +462,10 @@ async function listFlowPayments(company = null) {
       where = { company };
     }
   }
-  const rows = await Flow.findAll({ where, order: [['created_at', 'ASC']] });
+  const rows = await Flow.findAll({
+    where,
+    order: [['created_at', 'ASC'], ['id', 'ASC']]
+  });
   return rows.map(r => r.toJSON());
 }
 
