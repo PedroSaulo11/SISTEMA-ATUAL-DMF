@@ -54,6 +54,10 @@ function normalizeRole(role) {
     return String(role || '').trim().toLowerCase();
 }
 
+function isAdminUser(user) {
+    return normalizeRole(user && (user.cargo || user.role)) === 'admin';
+}
+
 function setFlowSyncStatus(message, tone = 'info') {
     const el = document.getElementById('flowSyncStatus');
     if (!el) return;
@@ -509,6 +513,11 @@ class DataProcessor {
                     this.resetFlowBackoff();
                     return false;
                 }
+                if (response.status === 409) {
+                    setFlowSyncStatus('Conflito de versão detectado. Recarregue o fluxo.', 'warn');
+                    showToast('Conflito de versão. Recarregue os dados.', 'warn');
+                    return false;
+                }
                 if (response.status === 429 || response.status >= 500) {
                     const delay = this.nextFlowBackoffDelay();
                     this.flowFetchCooldownUntil = Date.now() + delay;
@@ -531,10 +540,20 @@ class DataProcessor {
                 return true;
             }
             const data = await response.json();
-            this.records = (data.payments || []).map(p => ({
+            const previousOrder = new Map((this.records || []).map((p, idx) => [p.id, idx]));
+            const incoming = (data.payments || []).map(p => ({
                 ...p,
                 company: p.company || company
             }));
+            incoming.sort((a, b) => {
+                const aIdx = previousOrder.has(a.id) ? previousOrder.get(a.id) : Number.MAX_SAFE_INTEGER;
+                const bIdx = previousOrder.has(b.id) ? previousOrder.get(b.id) : Number.MAX_SAFE_INTEGER;
+                if (aIdx !== bIdx) return aIdx - bIdx;
+                const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return aTime - bTime;
+            });
+            this.records = incoming;
             this.currentCompany = company;
             this.save();
             window.DMF_CONTEXT.pagamentos = this.records;
@@ -832,7 +851,7 @@ class DataProcessor {
         this.records[idx] = r; // ALTERADO
         this.save(); // ALTERADO
         try {
-            await fetch(`${getApiBase()}/api/flow-payments/${id}/sign?company=${encodeURIComponent(this.currentCompany)}`, {
+            const response = await fetch(`${getApiBase()}/api/flow-payments/${id}/sign?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
@@ -840,6 +859,15 @@ class DataProcessor {
                 },
                 body: JSON.stringify({ assinatura: r.assinatura, company: this.currentCompany })
             });
+            if (response.status === 409) {
+                showToast('Pagamento já foi assinado por outro usuário.', 'warn');
+                await this.loadFromBackend(true, this.currentCompany);
+                this.core?.ui?.renderPaymentsTable?.();
+                return false;
+            }
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
         } catch (error) {
             console.warn('Flow payment sign sync failed:', error.message);
             this.core.sync.enqueue({ type: 'sign', data: { id, assinatura: r.assinatura, company: this.currentCompany } });
@@ -1064,6 +1092,48 @@ class DataProcessor {
         ]));
 
         const aoa = [header, ...rows];
+
+        const buildTotalsForExport = (items) => {
+            const totalsByCompany = {};
+            items.forEach((p) => {
+                const company = this.getPaymentCompany(p);
+                const center = String(p.centro || 'Geral').trim() || 'Geral';
+                const valor = Math.abs(Number(p.valor) || 0);
+                if (!totalsByCompany[company]) {
+                    totalsByCompany[company] = { total: 0, centers: {} };
+                }
+                totalsByCompany[company].total += valor;
+                totalsByCompany[company].centers[center] = (totalsByCompany[company].centers[center] || 0) + valor;
+            });
+            return totalsByCompany;
+        };
+
+        const totalsByCompany = buildTotalsForExport(filtered);
+        const companies = Object.keys(totalsByCompany)
+            .sort((a, b) => (totalsByCompany[b]?.total || 0) - (totalsByCompany[a]?.total || 0));
+
+        if (companies.length) {
+            const emptyRow = new Array(header.length).fill('');
+            aoa.push(emptyRow, emptyRow, emptyRow, emptyRow);
+
+            const pushMemoryRow = (label, value = '') => {
+                const row = new Array(header.length).fill('');
+                row[3] = label; // Coluna D
+                if (value) row[4] = { t: 's', v: value }; // Coluna E (texto)
+                aoa.push(row);
+            };
+
+            pushMemoryRow('Memória de calculos');
+            companies.forEach((company) => {
+                const entry = totalsByCompany[company];
+                pushMemoryRow(company, `R$ ${entry.total.toLocaleString('pt-BR')}`);
+                Object.entries(entry.centers)
+                    .sort((a, b) => b[1] - a[1])
+                    .forEach(([center, total]) => {
+                        pushMemoryRow(`- ${center}`, `R$ ${total.toLocaleString('pt-BR')}`);
+                    });
+            });
+        }
         const ws = XLSX.utils.aoa_to_sheet(aoa);
         const wb = XLSX.utils.book_new();
         const sheetName = filterCompany ? `Fluxo ${filterCompany}` : "Fluxo";
@@ -1153,6 +1223,35 @@ class DataProcessor {
         }
     }
 
+    async loadCenterCompanyOverridesFromBackend() {
+        const token = localStorage.getItem('dmf_api_token');
+        if (!token) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/centers/companies`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) return false;
+            const data = await response.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            const overrides = {};
+            items.forEach(item => {
+                const label = String(item.center_label || item.center || '').trim();
+                const key = this._key(item.center_key || label);
+                if (!label || !key) return;
+                overrides[key] = { company: item.company, label };
+            });
+            this.centerCompanyOverrides = overrides;
+            this.saveCenterCompanyOverrides();
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     saveCenterCompanyOverrides() {
         localStorage.setItem('dmf_center_company_overrides', JSON.stringify(this.centerCompanyOverrides || {}));
         if (window.DMF_CONTEXT) {
@@ -1168,7 +1267,7 @@ class DataProcessor {
         return this.normalizeCompany(entry.company || entry);
     }
 
-    setCenterCompany(center, company) {
+    setCenterCompany(center, company, options = {}) {
         const label = this._norm(center);
         if (!label || !company) return false;
         const key = this._key(label);
@@ -1176,6 +1275,22 @@ class DataProcessor {
         this.centerCompanyOverrides[key] = { company: this.normalizeCompany(company), label };
         this.pendingCenterAssignments?.delete?.(key);
         this.saveCenterCompanyOverrides();
+        if (this.core?.currentUser && options.sync !== false) {
+            fetch(`${getApiBase()}/api/centers/companies`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ center: label, company })
+            }).then((res) => {
+                if (!res.ok) {
+                    showToast('Falha ao salvar centro no servidor.', 'warn');
+                }
+            }).catch(() => {
+                showToast('Falha ao salvar centro no servidor.', 'warn');
+            });
+        }
         return true;
     }
 
@@ -1372,6 +1487,11 @@ class UIManager {
         this.userStatusLastAt = 0;
         this.userStatusMinInterval = 60000;
         this.companyFilter = 'DMF';
+        this.selectedArchiveId = null;
+        this.flowSyncIntervalMs = 7000;
+        this.flowNextSyncAt = null;
+        this.flowEventSource = null;
+        this.pendingCenterCompanyUpdates = new Map();
     }
 
     navigate(viewId, activeButton = null) {
@@ -1428,18 +1548,11 @@ class UIManager {
 
     initQuickActions() {
         const btnImport = document.getElementById('btnQuickImport');
-        const btnSign = document.getElementById('btnQuickSign');
         const btnExport = document.getElementById('btnQuickExport');
         if (btnImport) {
             btnImport.addEventListener('click', () => {
                 this.navigate('payments', document.querySelector('[data-nav="payments"]'));
                 setTimeout(() => document.getElementById('btnImportPayments')?.click(), 50);
-            });
-        }
-        if (btnSign) {
-            btnSign.addEventListener('click', () => {
-                this.navigate('payments', document.querySelector('[data-nav="payments"]'));
-                setTimeout(() => document.getElementById('btnSignAllPending')?.click(), 50);
             });
         }
         if (btnExport) {
@@ -1572,9 +1685,16 @@ class UIManager {
         const lastSyncEl = document.getElementById('flowLastSync');
         const lastSigEl = document.getElementById('flowLastSignature');
         if (lastSyncEl) {
-            lastSyncEl.textContent = this.core.data.lastSyncAt
-                ? `Última sincronização: ${new Date(this.core.data.lastSyncAt).toLocaleTimeString('pt-BR')}`
-                : 'Última sincronização: —';
+            if (this.core.data.lastSyncAt) {
+                const diffMs = Date.now() - new Date(this.core.data.lastSyncAt).getTime();
+                if (diffMs >= 0 && diffMs <= 5000) {
+                    lastSyncEl.textContent = 'Atualizado agora';
+                } else {
+                    lastSyncEl.textContent = `Última sincronização: ${new Date(this.core.data.lastSyncAt).toLocaleTimeString('pt-BR')}`;
+                }
+            } else {
+                lastSyncEl.textContent = 'Última sincronização: —';
+            }
         }
         if (lastSigEl) {
             const latest = (this.core.data.records || [])
@@ -1607,6 +1727,10 @@ class UIManager {
             this.updateStats();
             this.initCharts();
             this.renderMonthlyReports();
+            this.core.data.loadCenterCompanyOverridesFromBackend().then(() => {
+                this.renderCompanyTotals();
+                this.renderCenterCompanyEditor();
+            });
         });
         this.startBackendStatusMonitor();
         this.startSessionMonitor();
@@ -1688,6 +1812,20 @@ class UIManager {
             } else {
                 el.classList.add('is-ok');
             }
+
+            const syncEl = document.getElementById('syncCountdown');
+            if (syncEl) {
+                if (this.flowNextSyncAt) {
+                    const remainingMs = Math.max(this.flowNextSyncAt - Date.now(), 0);
+                    const syncMinutes = Math.floor(remainingMs / 60000);
+                    const syncSeconds = Math.floor((remainingMs % 60000) / 1000);
+                    const mm = String(syncMinutes).padStart(2, '0');
+                    const ss = String(syncSeconds).padStart(2, '0');
+                    syncEl.textContent = `Sincronizando novamente em: ${mm}:${ss}`;
+                } else {
+                    syncEl.textContent = 'Sincronizando novamente em: --:--';
+                }
+            }
         };
         update();
         this.sessionStatusTimer = setInterval(update, 1000);
@@ -1753,10 +1891,12 @@ class UIManager {
     startFlowAutoRefresh() {
         if (this.flowAutoRefreshTimer) return;
         this.flowAutoRefreshBusy = true;
+        this.flowNextSyncAt = Date.now() + this.flowSyncIntervalMs;
         this.core.data.loadFromBackend().then(() => {
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();
+            this.startFlowPushStream();
         }).finally(() => {
             this.flowAutoRefreshBusy = false;
         });
@@ -1769,13 +1909,55 @@ class UIManager {
             }).finally(() => {
                 this.flowAutoRefreshBusy = false;
             });
-        }, 20000);
+            this.flowNextSyncAt = Date.now() + this.flowSyncIntervalMs;
+        }, this.flowSyncIntervalMs);
     }
 
     stopFlowAutoRefresh() {
         if (this.flowAutoRefreshTimer) {
             clearInterval(this.flowAutoRefreshTimer);
             this.flowAutoRefreshTimer = null;
+        }
+        this.flowNextSyncAt = null;
+        this.stopFlowPushStream();
+    }
+
+    startFlowPushStream() {
+        if (this.flowEventSource) return;
+        const token = localStorage.getItem('dmf_api_token');
+        if (!token) return;
+        const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
+        const url = `${getApiBase()}/api/flow-payments/stream?company=${encodeURIComponent(company)}&token=${encodeURIComponent(token)}`;
+        try {
+            this.flowEventSource = new EventSource(url);
+        } catch (_) {
+            this.flowEventSource = null;
+            return;
+        }
+        this.flowEventSource.addEventListener('flow_update', (event) => {
+            try {
+                const payload = event?.data ? JSON.parse(event.data) : null;
+                const relevant = !payload?.company || payload.company === company;
+                if (!relevant) return;
+                if (payload?.type === 'payment_signed' || payload?.type === 'flow_imported') {
+                    this.core.data.loadFromBackend(true, company).then(() => {
+                        this.renderPaymentsTable();
+                        this.updateStats();
+                    });
+                }
+            } catch (_) {
+                // ignore
+            }
+        });
+        this.flowEventSource.onerror = () => {
+            this.stopFlowPushStream();
+        };
+    }
+
+    stopFlowPushStream() {
+        if (this.flowEventSource) {
+            this.flowEventSource.close();
+            this.flowEventSource = null;
         }
     }
 
@@ -1827,6 +2009,9 @@ class UIManager {
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
             });
+            this.core.admin.refreshRolesFromApi().then(() => {
+                this.renderRolesTable();
+            });
         } else {
             this.renderUsersTable();
         }
@@ -1854,7 +2039,6 @@ class UIManager {
         const signAllBtn = document.getElementById('btnSignAllPending');
         const quickImportBtn = document.getElementById('btnQuickImport');
         const quickExportBtn = document.getElementById('btnQuickExport');
-        const quickSignBtn = document.getElementById('btnQuickSign');
 
         const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
@@ -1889,8 +2073,9 @@ class UIManager {
             auditNavBtn.classList.toggle('hidden', !canAudit);
         }
         if (revokeSelfBtn) {
-            revokeSelfBtn.classList.toggle('hidden', !isAdminAccess);
-            revokeSelfBtn.disabled = !isAdminAccess;
+            const canRevokeAll = isAdminUser(this.core.currentUser);
+            revokeSelfBtn.classList.toggle('hidden', !canRevokeAll);
+            revokeSelfBtn.disabled = !canRevokeAll;
         }
         if (paymentsHistoryTabBtn) {
             paymentsHistoryTabBtn.classList.toggle('hidden', !canViewArchives);
@@ -1912,10 +2097,6 @@ class UIManager {
         if (quickExportBtn) {
             quickExportBtn.classList.toggle('hidden', !canExport);
             quickExportBtn.disabled = !canExport;
-        }
-        if (quickSignBtn) {
-            quickSignBtn.classList.toggle('hidden', !canSign);
-            quickSignBtn.disabled = !canSign;
         }
     }
 
@@ -2083,6 +2264,108 @@ class UIManager {
             });
             container.dataset.boundCenters = 'true';
         }
+        this.renderCenterCompanyEditor();
+        this.core.data.loadCenterCompanyOverridesFromBackend().then(() => {
+            this.renderCenterCompanyEditor();
+        });
+    }
+
+    renderCenterCompanyEditor() {
+        const grid = document.getElementById('centerCompanyGrid');
+        if (!grid) return;
+        const search = (document.getElementById('centerCompanySearch')?.value || '').trim().toLowerCase();
+        const centers = (this.core.data.costCenters || []).slice().sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        const filtered = search
+            ? centers.filter(c => String(c || '').toLowerCase().includes(search))
+            : centers;
+        if (!filtered.length) {
+            grid.innerHTML = '<div class="center-empty">Sem centros cadastrados.</div>';
+            return;
+        }
+        const companyOptions = ['DMF', 'JFX', 'Real Energy', 'Outros'];
+        const summaryEl = document.getElementById('centerCompanySummary');
+        if (summaryEl) {
+            const counts = { DMF: 0, JFX: 0, 'Real Energy': 0, Outros: 0 };
+            centers.forEach(center => {
+                const company = this.core.data.getCenterCompanyOverride(center) || this.core.data.getCompanyForCenter(center) || 'Outros';
+                const key = counts[company] !== undefined ? company : 'Outros';
+                counts[key] += 1;
+            });
+            summaryEl.innerHTML = Object.entries(counts)
+                .map(([name, count]) => `<span class="summary-chip">${name}: ${count}</span>`)
+                .join('');
+        }
+        const saveBtn = document.getElementById('btnSaveCenterCompanies');
+        if (saveBtn) saveBtn.disabled = this.pendingCenterCompanyUpdates.size === 0;
+        grid.innerHTML = `
+            <div class="center-company-table">
+                <div class="center-company-row center-company-header">
+                    <span>Centro de Custo</span>
+                    <span>Empresa</span>
+                </div>
+                ${filtered.map(center => {
+                    const current = this.core.data.getCenterCompanyOverride(center) || this.core.data.getCompanyForCenter(center) || 'Outros';
+                    const options = companyOptions.map(opt => {
+                        const selected = opt === current ? 'selected' : '';
+                        return `<option value="${opt}" ${selected}>${opt}</option>`;
+                    }).join('');
+                    return `
+                        <div class="center-company-row" data-center-name="${center}">
+                            <div class="center-company-name">${center}</div>
+                            <div class="center-company-select">
+                                <select class="styled-input" data-center-company-select>
+                                    ${options}
+                                </select>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+
+        if (!grid.dataset.boundCenterCompany) {
+            grid.addEventListener('change', (event) => {
+                const select = event.target.closest('[data-center-company-select]');
+                if (!select) return;
+                const row = event.target.closest('[data-center-name]');
+                const center = row?.getAttribute('data-center-name');
+                const company = select.value;
+                if (!center) return;
+                this.core.data.setCenterCompany(center, company, { sync: false });
+                this.pendingCenterCompanyUpdates.set(center, { center, company });
+                const saveBtn = document.getElementById('btnSaveCenterCompanies');
+                if (saveBtn) saveBtn.disabled = this.pendingCenterCompanyUpdates.size === 0;
+            });
+            grid.dataset.boundCenterCompany = 'true';
+        }
+    }
+
+    async saveAllCenterCompanies() {
+        const items = Array.from(this.pendingCenterCompanyUpdates.values());
+        if (!items.length) {
+            showToast('Nenhuma alteração pendente.', 'info');
+            return;
+        }
+        try {
+            const response = await fetch(`${getApiBase()}/api/centers/companies/bulk`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ items })
+            });
+            if (!response.ok) {
+                showToast('Falha ao salvar centros no servidor.', 'warn');
+                return;
+            }
+            this.pendingCenterCompanyUpdates.clear();
+            const saveBtn = document.getElementById('btnSaveCenterCompanies');
+            if (saveBtn) saveBtn.disabled = true;
+            showToast('Centros de custo salvos.', 'success');
+        } catch (_) {
+            showToast('Falha ao salvar centros no servidor.', 'warn');
+        }
     }
 
     getSelectedReportMonth() {
@@ -2186,21 +2469,171 @@ class UIManager {
         }
     }
 
+    getArchiveFilterState() {
+        const search = (document.getElementById('archiveSearchInput')?.value || '').trim().toLowerCase();
+        const startValue = document.getElementById('archiveStart')?.value || '';
+        const endValue = document.getElementById('archiveEnd')?.value || '';
+        const rawSortValue = document.getElementById('archiveSort')?.value || 'newest';
+        const allowedSorts = new Set(['newest', 'oldest', 'value_desc', 'count_desc']);
+        const sortValue = allowedSorts.has(rawSortValue) ? rawSortValue : 'newest';
+        const start = startValue ? new Date(`${startValue}T00:00:00`) : null;
+        const end = endValue ? new Date(`${endValue}T23:59:59`) : null;
+        return {
+            search,
+            start,
+            end,
+            sortValue,
+            startValue,
+            endValue
+        };
+    }
+
+    applyArchiveFilters(archives, filterState) {
+        const searchTerm = filterState.search;
+        const start = filterState.start;
+        const end = filterState.end;
+        const sorted = archives.map(archive => {
+            const stats = this.computeArchiveStats(archive);
+            const createdAt = archive?.created_at ? new Date(archive.created_at) : null;
+            return { archive, stats, createdAt };
+        }).filter(item => {
+            if (start || end) {
+                if (!item.createdAt) return false;
+                if (start && item.createdAt < start) return false;
+                if (end && item.createdAt > end) return false;
+            }
+            if (!searchTerm) return true;
+            const haystack = [
+                item.archive?.label,
+                item.archive?.company,
+                item.archive?.created_by
+            ].filter(Boolean).join(' ').toLowerCase();
+            return haystack.includes(searchTerm);
+        });
+
+        switch (filterState.sortValue) {
+            case 'oldest':
+                sorted.sort((a, b) => (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0));
+                break;
+            case 'value_desc':
+                sorted.sort((a, b) => b.stats.total - a.stats.total);
+                break;
+            case 'count_desc':
+                sorted.sort((a, b) => b.stats.count - a.stats.count);
+                break;
+            case 'newest':
+            default:
+                sorted.sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+                break;
+        }
+
+        return sorted;
+    }
+
+    updateArchiveSummary(filtered, filterState, totalCount) {
+        const countEl = document.getElementById('archiveTotalCount');
+        const paymentsEl = document.getElementById('archiveTotalPayments');
+        const valueEl = document.getElementById('archiveTotalValue');
+        const signedEl = document.getElementById('archiveTotalSigned');
+        const rangeEl = document.getElementById('archiveSummaryRange');
+        const resultsEl = document.getElementById('archiveResultsCount');
+
+        let totalPayments = 0;
+        let totalValue = 0;
+        let totalSigned = 0;
+        filtered.forEach(item => {
+            totalPayments += item.stats.count;
+            totalValue += item.stats.total;
+            totalSigned += item.stats.signed;
+        });
+
+        if (countEl) countEl.textContent = String(filtered.length);
+        if (paymentsEl) paymentsEl.textContent = String(totalPayments);
+        if (valueEl) valueEl.textContent = `R$ ${totalValue.toLocaleString('pt-BR')}`;
+        if (signedEl) signedEl.textContent = String(totalSigned);
+        if (resultsEl) resultsEl.textContent = `Mostrando ${filtered.length} de ${totalCount}`;
+        if (rangeEl) {
+            if (filterState.startValue && filterState.endValue) {
+                rangeEl.textContent = `Período: ${filterState.startValue} → ${filterState.endValue}`;
+            } else if (filterState.startValue) {
+                rangeEl.textContent = `Desde ${filterState.startValue}`;
+            } else if (filterState.endValue) {
+                rangeEl.textContent = `Até ${filterState.endValue}`;
+            } else {
+                rangeEl.textContent = 'Todos os períodos';
+            }
+        }
+    }
+
     renderFlowArchivesList() {
         const list = document.getElementById('flowArchivesList');
         if (!list) return;
+        const sortSelect = document.getElementById('archiveSort');
+        if (sortSelect && !sortSelect.value) {
+            sortSelect.value = 'newest';
+        }
         const archives = this.core.data.archives || [];
+        const filterState = this.getArchiveFilterState();
+        const filtered = this.applyArchiveFilters(archives, filterState);
+        this.updateArchiveSummary(filtered, filterState, archives.length);
+
         if (!archives.length) {
-            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponível.</div>`;
+            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponível. Arquive o fluxo atual para começar.</div>`;
             const detail = document.getElementById('flowArchiveDetail');
             if (detail) detail.innerHTML = '';
             this.renderArchiveCompareOptions([]);
             return;
         }
-        list.innerHTML = archives.map(a => `
-            <button class="flow-archive-item" data-archive-id="${a.id}">${a.label}</button>
-        `).join('');
-        this.renderArchiveCompareOptions(archives);
+
+        if (!filtered.length) {
+            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo encontrado com os filtros atuais. Ajuste a busca ou o período.</div>`;
+            const detail = document.getElementById('flowArchiveDetail');
+            if (detail) detail.innerHTML = '';
+            this.renderArchiveCompareOptions([]);
+            return;
+        }
+
+        let newestId = null;
+        filtered.forEach(item => {
+            if (!item.createdAt) return;
+            if (!newestId) {
+                newestId = item.archive?.id || null;
+                return;
+            }
+            const current = filtered.find(entry => entry.archive?.id === newestId);
+            const currentTime = current?.createdAt?.getTime?.() || 0;
+            const candidateTime = item.createdAt.getTime();
+            if (candidateTime > currentTime) {
+                newestId = item.archive?.id || null;
+            }
+        });
+
+        list.innerHTML = filtered.map(item => {
+            const archive = item.archive;
+            const createdAt = item.createdAt ? item.createdAt.toLocaleString('pt-BR') : 'Data não informada';
+            const company = archive.company ? `Empresa: ${archive.company}` : 'Empresa não informada';
+            const createdBy = archive.created_by ? `Criado por ${archive.created_by}` : 'Criador não informado';
+            const pending = Math.max(item.stats.count - item.stats.signed, 0);
+            const isActive = this.selectedArchiveId === archive.id;
+            const isNewest = newestId && archive.id === newestId;
+            return `
+                <div class="flow-archive-card ${isActive ? 'active' : ''}" data-archive-id="${archive.id}" role="button" tabindex="0">
+                    <div class="flow-archive-title">
+                        ${archive.label}
+                        ${isNewest ? '<span class="flow-archive-badge">Novo</span>' : ''}
+                    </div>
+                    <div class="flow-archive-meta">${company} • ${createdBy}</div>
+                    <div class="flow-archive-meta">${createdAt}</div>
+                    <div class="flow-archive-total">R$ ${item.stats.total.toLocaleString('pt-BR')}</div>
+                    <div class="flow-archive-tags">
+                        <span class="flow-archive-pill">Pagamentos: ${item.stats.count}</span>
+                        <span class="flow-archive-pill">Assinados: ${item.stats.signed}</span>
+                        <span class="flow-archive-pill">Pendentes: ${pending}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        this.renderArchiveCompareOptions(filtered.map(item => item.archive));
 
         if (!list.dataset.boundArchiveClick) {
             list.addEventListener('click', (event) => {
@@ -2208,7 +2641,8 @@ class UIManager {
                 if (!button) return;
                 const id = button.getAttribute('data-archive-id');
                 const selected = (this.core.data.archives || []).find(a => a.id === id);
-                list.querySelectorAll('.flow-archive-item').forEach(b => b.classList.remove('active'));
+                this.selectedArchiveId = id;
+                list.querySelectorAll('.flow-archive-card').forEach(b => b.classList.remove('active'));
                 button.classList.add('active');
                 this.renderFlowArchiveDetail(selected);
             });
@@ -2216,9 +2650,10 @@ class UIManager {
         }
 
         const first = list.querySelector('[data-archive-id]');
-        if (first && !list.querySelector('.flow-archive-item.active')) {
+        if (first && !list.querySelector('.flow-archive-card.active')) {
             first.classList.add('active');
             const id = first.getAttribute('data-archive-id');
+            this.selectedArchiveId = id;
             const selected = archives.find(a => a.id === id);
             this.renderFlowArchiveDetail(selected);
         }
@@ -2531,6 +2966,9 @@ class UIManager {
         const rows = this.getFilteredPayments ? this.getFilteredPayments() : this.core.data.records;
 
         body.innerHTML = rows.map(p => {
+            const assinaturaTime = p.assinatura?.dataISO
+                ? new Date(p.assinatura.dataISO).toLocaleString('pt-BR')
+                : '';
             const assinaturaStr = p.assinatura
                 ? `Assinado por: ${p.assinatura.usuarioNome}` // ALTERADO
                 : '-'; // ALTERADO
@@ -2544,16 +2982,26 @@ class UIManager {
                 ? `<div class="qr-box" data-qr="${publicBase}${p.assinatura.hash}"></div>`
                 : '';
 
+            const rowClass = p.assinatura ? 'payment-row-signed' : '';
             return `
-                <tr>
+                <tr class="${rowClass}">
                     <td><strong>${p.fornecedor || ''}</strong></td>
                     <td>${p.data || ''}</td>
                     <td>${(p.descricao || '').trim() || '—'}</td>
                     <td>R$ ${Number(p.valor || 0).toLocaleString('pt-BR')}</td>
                     <td>${(p.categoria || '').trim() || '—'}</td>
                     <td>${p.centro || ''}</td>
-                    <td><span>${p.assinatura ? 'Assinado' : 'Pendente'}</span></td>
-                    <td><small>${assinaturaStr}</small>${qrHtml}</td>
+                    <td>
+                        <span class="badge ${p.assinatura ? 'badge-signed' : 'badge-pending'}">
+                            ${p.assinatura ? 'Assinado' : 'Pendente'}
+                        </span>
+                    </td>
+                    <td>
+                        ${p.assinatura
+                            ? `<div class="signature-highlight">${assinaturaStr}</div><div class="signature-time">${assinaturaTime}</div>`
+                            : '<span>—</span>'}
+                        ${qrHtml}
+                    </td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
                 </tr>
             `;
@@ -2995,6 +3443,79 @@ class AdminManager {
         }
     }
 
+    async refreshRolesFromApi() {
+        if (!getAuthHeaders().Authorization) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/roles`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                console.warn('API list roles failed:', response.status);
+                return false;
+            }
+            const data = await response.json();
+            const roles = (data.roles || []).map(r => ({
+                id: r.id || Date.now() + Math.random(),
+                name: r.name,
+                permissions: Array.isArray(r.permissions) ? r.permissions : []
+            }));
+            if (roles.length) {
+                this.roles = roles;
+                this.saveRoles();
+            }
+            return true;
+        } catch (error) {
+            console.warn('API list roles unavailable:', error.message);
+            return false;
+        }
+    }
+
+    async upsertRoleToApi(role) {
+        if (!getAuthHeaders().Authorization || !role?.name) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/roles/${encodeURIComponent(role.name)}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ permissions: role.permissions || [] })
+            });
+            if (!response.ok) {
+                console.warn('API upsert role failed:', response.status);
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.warn('API upsert role unavailable:', error.message);
+            return false;
+        }
+    }
+
+    async deleteRoleFromApi(name) {
+        if (!getAuthHeaders().Authorization || !name) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/roles/${encodeURIComponent(name)}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                console.warn('API delete role failed:', response.status);
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.warn('API delete role unavailable:', error.message);
+            return false;
+        }
+    }
+
     requireAdmin() {
         if (!this.hasPermission(this.core.currentUser, 'admin_access')) {
             alert('Somente o cargo ADMIN pode gerenciar usuários e cargos.');
@@ -3079,7 +3600,10 @@ class AdminManager {
         try {
             const response = await fetch(`${getApiBase()}/api/auth/register`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
                 body: JSON.stringify({
                     username: normalizedUsername,
                     email: normalizedEmail,
@@ -3348,6 +3872,7 @@ class AdminManager {
         this.roles.push(newRole);
         this.saveRoles();
         this.core.audit.log('CRIAÇÃO CARGO', `Cargo ${name} criado com permissões: ${permissions.join(', ')}.`);
+        this.upsertRoleToApi(newRole);
         this.sendRoleEvent('create', newRole);
         this.core.ui.closeModal('createRoleModal');
         this.core.ui.renderRolesTable();
@@ -3361,6 +3886,7 @@ class AdminManager {
             Object.assign(role, updates);
             this.saveRoles();
             this.core.audit.log('ATUALIZAÇÃO CARGO', `Cargo ${role.name} atualizado. Permissões: ${(role.permissions || []).join(', ')}`);
+            this.upsertRoleToApi(role);
             this.sendRoleEvent('update', role);
         }
     }
@@ -3372,6 +3898,9 @@ class AdminManager {
         this.saveRoles();
         this.core.audit.log('EXCLUSÃO CARGO', `Cargo ${role?.name || id} excluído.`);
         if (role) this.sendRoleEvent('delete', role);
+        if (role?.name) {
+            this.deleteRoleFromApi(role.name);
+        }
     }
 
     getRolePermissions(roleName) {
@@ -3802,7 +4331,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const revokeSelfButton = document.getElementById('btnRevokeSelf');
     if (revokeSelfButton) {
         revokeSelfButton.addEventListener('click', function () {
-            if (!system?.admin?.hasPermission?.(system?.currentUser, 'admin_access')) {
+            if (!isAdminUser(system?.currentUser)) {
                 return;
             }
             if (!confirm('Revogar todas as sessões ativas e sair?')) return;
@@ -3944,6 +4473,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    const centerCompanySearch = document.getElementById('centerCompanySearch');
+    if (centerCompanySearch) {
+        centerCompanySearch.addEventListener('input', function () {
+            system?.ui?.renderCenterCompanyEditor?.();
+        });
+    }
+
+    const saveCenterCompaniesButton = document.getElementById('btnSaveCenterCompanies');
+    if (saveCenterCompaniesButton) {
+        saveCenterCompaniesButton.addEventListener('click', function () {
+            system?.ui?.saveAllCenterCompanies?.();
+        });
+    }
+
     // Navigation event listeners
     document.querySelectorAll('[data-nav]').forEach(button => {
         button.addEventListener('click', function() {
@@ -4051,6 +4594,7 @@ document.addEventListener('DOMContentLoaded', function() {
         filterArchivesButton.addEventListener('click', function () {
             const start = document.getElementById('archiveStart')?.value || '';
             const end = document.getElementById('archiveEnd')?.value || '';
+            document.querySelectorAll('[data-archive-range]').forEach(btn => btn.classList.remove('active'));
             system?.data?.loadArchivesFromBackend?.({ start, end }).then(() => {
                 system?.ui?.renderFlowArchivesList?.();
             });
@@ -4064,8 +4608,56 @@ document.addEventListener('DOMContentLoaded', function() {
             const endInput = document.getElementById('archiveEnd');
             if (startInput) startInput.value = '';
             if (endInput) endInput.value = '';
+            document.querySelectorAll('[data-archive-range]').forEach(btn => btn.classList.remove('active'));
             system?.data?.loadArchivesFromBackend?.().then(() => {
                 system?.ui?.renderFlowArchivesList?.();
+            });
+        });
+    }
+
+    const archiveSearchInput = document.getElementById('archiveSearchInput');
+    if (archiveSearchInput) {
+        archiveSearchInput.addEventListener('input', function () {
+            system?.ui?.renderFlowArchivesList?.();
+        });
+    }
+
+    const archiveSortSelect = document.getElementById('archiveSort');
+    if (archiveSortSelect) {
+        archiveSortSelect.addEventListener('change', function () {
+            system?.ui?.renderFlowArchivesList?.();
+        });
+    }
+
+    const archiveRangeButtons = document.querySelectorAll('[data-archive-range]');
+    if (archiveRangeButtons.length) {
+        archiveRangeButtons.forEach(button => {
+            button.addEventListener('click', function () {
+                const range = this.getAttribute('data-archive-range');
+                const startInput = document.getElementById('archiveStart');
+                const endInput = document.getElementById('archiveEnd');
+                const today = new Date();
+                const formatDate = (date) => date.toISOString().slice(0, 10);
+
+                archiveRangeButtons.forEach(btn => btn.classList.remove('active'));
+                this.classList.add('active');
+
+                if (range === 'all') {
+                    if (startInput) startInput.value = '';
+                    if (endInput) endInput.value = '';
+                } else {
+                    const days = Number(range);
+                    const startDate = new Date(today);
+                    startDate.setDate(startDate.getDate() - Math.max(days - 1, 0));
+                    if (startInput) startInput.value = formatDate(startDate);
+                    if (endInput) endInput.value = formatDate(today);
+                }
+
+                const start = startInput?.value || '';
+                const end = endInput?.value || '';
+                system?.data?.loadArchivesFromBackend?.({ start, end }).then(() => {
+                    system?.ui?.renderFlowArchivesList?.();
+                });
             });
         });
     }

@@ -162,6 +162,10 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     transform: translateY(-1px);
 }
 
+.hidden {
+    display: none !important;
+}
+
 .main-content {
     flex: 1;
     margin-left: var(--sidebar-width);
@@ -363,8 +367,33 @@ tr:hover { background: #f8fbff; }
 
 #paymentsTable tbody tr:hover td {
     background: #e8f2ff;
-    color: #ffffff;
+    color: #1f2a44;
     transition: background 0.2s ease, color 0.2s ease;
+}
+
+.payment-row-signed td {
+    background: #f6fff0;
+}
+
+.payment-row-signed:hover td {
+    background: #ebf9de;
+    color: #1f2a44;
+}
+
+.signature-highlight {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #ecfdf5;
+    color: #065f46;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.signature-time {
+    font-size: 11px;
+    color: #5b6b7b;
 }
 
 /* --- Badges de Status --- */
@@ -713,6 +742,77 @@ tr:hover { background: #f8fbff; }
     margin-top: 12px;
 }
 
+.center-permission-note {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px dashed rgba(0, 82, 204, 0.2);
+    background: rgba(0, 82, 204, 0.06);
+    color: #3b4a66;
+    font-size: 12px;
+}
+
+.center-company-card {
+    margin-top: 16px;
+    padding: 16px;
+    background: #fff;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    border-radius: 12px;
+    box-shadow: 0 8px 20px rgba(0, 42, 84, 0.06);
+}
+
+.center-company-grid {
+    margin-top: 12px;
+}
+
+.center-company-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.center-company-summary .summary-chip {
+    background: #eef2ff;
+    color: #1f2a44;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.center-company-table {
+    display: grid;
+    gap: 8px;
+}
+
+.center-company-row {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #f7f9fc;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+}
+
+.center-company-header {
+    background: #eef2f7;
+    font-weight: 700;
+    color: #1f2a44;
+}
+
+.center-company-name {
+    font-weight: 600;
+    color: #1f2a44;
+}
+
+.center-company-select .styled-input {
+    width: 100%;
+}
+
 .center-empty {
     font-size: 12px;
     color: #64748b;
@@ -845,34 +945,153 @@ tr:hover { background: #f8fbff; }
     display: block;
 }
 
-.flow-archives-list {
+.archive-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 12px 0 16px;
+}
+
+.archive-summary-card {
+    background: #f7f9fc;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    border-radius: 12px;
+    padding: 12px 14px;
+}
+
+.archive-summary-card .summary-label {
+    color: #4a5568;
+    font-size: 0.85rem;
+    margin-bottom: 4px;
+}
+
+.archive-summary-card .summary-value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #1f2a44;
+}
+
+.archive-summary-card .summary-meta {
+    color: #6b7280;
+    font-size: 0.8rem;
+    margin-top: 4px;
+}
+
+.archive-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 14px;
+}
+
+.archive-search {
+    flex: 1 1 260px;
+    min-width: 220px;
+}
+
+.archive-quick-filters {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin: 10px 0 16px;
 }
 
-.flow-archive-item {
-    padding: 8px 12px;
-    border-radius: 999px;
-    border: 1px solid rgba(0, 51, 102, 0.15);
-    background: #f7f9fc;
-    color: #1f2a44;
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: all 0.2s ease;
+.archive-quick-filters .btn {
+    padding: 6px 10px;
+    font-size: 0.82rem;
 }
 
-.flow-archive-item:hover {
-    transform: translateY(-1px);
-    background: #e9f0ff;
-    border-color: rgba(0, 51, 102, 0.3);
-}
-
-.flow-archive-item.active {
+.archive-quick-filters .btn.active {
     background: var(--primary);
     color: #fff;
     border-color: var(--primary);
+}
+
+.archive-sort {
+    min-width: 180px;
+}
+
+.archive-results-count {
+    color: #4a5568;
+    font-size: 0.85rem;
+    margin-left: auto;
+}
+
+.flow-archives-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    margin: 10px 0 16px;
+}
+
+.flow-archive-card {
+    background: #fff;
+    border: 1px solid rgba(0, 51, 102, 0.08);
+    border-radius: 12px;
+    padding: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.flow-archive-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 20px rgba(0, 42, 84, 0.08);
+    border-color: rgba(0, 51, 102, 0.2);
+}
+
+.flow-archive-card.active {
+    border-color: var(--primary);
+    box-shadow: 0 12px 24px rgba(0, 79, 156, 0.18);
+}
+
+.flow-archive-title {
+    font-weight: 600;
+    color: #1f2a44;
+    font-size: 0.98rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.flow-archive-badge {
+    background: #f59e0b;
+    color: #1f2a44;
+    font-weight: 700;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.flow-archive-meta {
+    color: #6b7280;
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.flow-archive-total {
+    font-weight: 700;
+    color: #0b4d88;
+    font-size: 1.05rem;
+}
+
+.flow-archive-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.flow-archive-pill {
+    background: #eef2f7;
+    border-radius: 999px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    color: #3b4a66;
 }
 
 .flow-archive-detail {

@@ -1,0 +1,5 @@
+cron:
+- description: "Automated backup snapshot"
+  url: /tasks/backup
+  schedule: every 24 hours
+  timezone: America/Sao_Paulo

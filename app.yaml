@@ -6,6 +6,10 @@ beta_settings:
 
 env_variables:
   NODE_ENV: "production"
+  PERMISSIONS_ENFORCED: "true"
+  SLOW_REQUEST_THRESHOLD_MS: "2000"
+  API_RATE_LIMIT_MAX: "600"
+  ENFORCE_COMPANY_ACCESS: "false"
   JWT_SECRET: "sCVUuEvBTuaxSAylPjV1VcYRrcqqxqEdF8Bfw3jq7QSSEe91dRNLUTmZ+NTiUtrw7wusrKfkzCGai9oLGk2mnw=="
   CONTA_AZUL_CLIENT_ID: "93gqdtsa9t2892ci4mejv2n90"
   CONTA_AZUL_CLIENT_SECRET: "1q0pglvkkg9s3jbq06b7vavitf9be29r2hpjql04i3359umvuo0t"

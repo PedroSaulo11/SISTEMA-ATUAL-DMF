@@ -49,6 +49,8 @@ const FlowPaymentModel = () => getSequelize().define('flow_payments', {
   centro: { type: DataTypes.TEXT },
   categoria: { type: DataTypes.TEXT },
   assinatura: { type: DataTypes.JSONB },
+  version: { type: DataTypes.INTEGER, defaultValue: 0 },
+  updated_by: { type: DataTypes.TEXT },
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
@@ -92,9 +94,35 @@ const AuditEventModel = () => getSequelize().define('audit_events', {
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const RoleModel = () => getSequelize().define('app_roles', {
+  name: { type: DataTypes.TEXT, primaryKey: true },
+  permissions: { type: DataTypes.JSONB, allowNull: false },
+  updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
 const UserSessionModel = () => getSequelize().define('user_sessions', {
   user_id: { type: DataTypes.BIGINT, primaryKey: true },
   revoked_after: { type: DataTypes.DATE },
+}, { timestamps: false, freezeTableName: true });
+
+const UserCompanyModel = () => getSequelize().define('app_user_companies', {
+  user_id: { type: DataTypes.BIGINT, primaryKey: true },
+  company: { type: DataTypes.TEXT, primaryKey: true },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
+const CenterCompanyModel = () => getSequelize().define('app_center_companies', {
+  center_key: { type: DataTypes.TEXT, primaryKey: true },
+  center_label: { type: DataTypes.TEXT, allowNull: false },
+  company: { type: DataTypes.TEXT, allowNull: false },
+  updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
+const BackupSnapshotModel = () => getSequelize().define('backup_snapshots', {
+  id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
+  created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  created_by: { type: DataTypes.TEXT },
+  payload: { type: DataTypes.JSONB, allowNull: false },
 }, { timestamps: false, freezeTableName: true });
 
 async function initDb() {
@@ -112,9 +140,14 @@ async function initDb() {
       FlowArchiveModel();
       LoginAuditModel();
       AuditEventModel();
+      RoleModel();
       UserSessionModel();
+      UserCompanyModel();
+      CenterCompanyModel();
+      BackupSnapshotModel();
       WebhookModel();
       await db.sync();
+      await ensureDefaultRoles();
       dbReady = true;
       return;
     } catch (error) {
@@ -226,6 +259,114 @@ async function replaceUsers(users) {
 async function updateLastLogin(userId) {
   const User = UserModel();
   await User.update({ last_login: new Date() }, { where: { id: userId } });
+}
+
+async function ensureDefaultRoles() {
+  const Role = RoleModel();
+  const defaults = [
+    {
+      name: 'admin',
+      permissions: [
+        'admin_access',
+        'audit_access',
+        'audit_login_access',
+        'sign_payments',
+        'import_payments',
+        'export_payments',
+        'add_payments',
+        'delete_payments',
+        'view_archives',
+        'archive_flow',
+        'delete_archive',
+        'export_archives',
+        'compare_archives',
+        'roles_manage',
+        'user_manage',
+        'backup_restore',
+        'revoke_sessions'
+      ]
+    },
+    {
+      name: 'gestor',
+      permissions: [
+        'sign_payments',
+        'import_payments',
+        'export_payments',
+        'add_payments',
+        'view_archives',
+        'compare_archives',
+        'audit_access',
+        'audit_login_access'
+      ]
+    },
+    { name: 'user', permissions: ['sign_payments'] }
+  ];
+  const existing = await Role.findAll();
+  if (!existing.length) {
+    await Role.bulkCreate(defaults.map(r => ({
+      name: r.name,
+      permissions: r.permissions,
+      updated_at: new Date()
+    })));
+    return;
+  }
+  for (const role of defaults) {
+    const row = await Role.findByPk(role.name);
+    if (!row) {
+      await Role.create({
+        name: role.name,
+        permissions: role.permissions,
+        updated_at: new Date()
+      });
+      continue;
+    }
+    const currentPerms = Array.isArray(row.permissions) ? row.permissions : [];
+    if (currentPerms.includes('all')) {
+      await Role.update({
+        permissions: role.permissions,
+        updated_at: new Date()
+      }, { where: { name: role.name } });
+    }
+  }
+}
+
+async function listRoles() {
+  const Role = RoleModel();
+  const rows = await Role.findAll();
+  return rows.map(r => r.toJSON());
+}
+
+async function getRoleByName(name) {
+  const Role = RoleModel();
+  const row = await Role.findByPk(name);
+  return row ? row.toJSON() : null;
+}
+
+async function upsertRole(name, permissions) {
+  const Role = RoleModel();
+  await Role.upsert({
+    name,
+    permissions: permissions || [],
+    updated_at: new Date()
+  });
+  return getRoleByName(name);
+}
+
+async function deleteRoleByName(name) {
+  const Role = RoleModel();
+  return Role.destroy({ where: { name } });
+}
+
+async function replaceRoles(roles) {
+  const Role = RoleModel();
+  await Role.destroy({ where: {}, truncate: true });
+  if (roles && roles.length) {
+    await Role.bulkCreate(roles.map(r => ({
+      name: r.name,
+      permissions: r.permissions || [],
+      updated_at: new Date()
+    })));
+  }
 }
 
 async function getServiceToken(service) {
@@ -351,6 +492,26 @@ async function upsertFlowPayment(payment) {
   });
 }
 
+async function updateFlowPaymentWithVersion(id, updates, expectedVersion, company = null) {
+  const Flow = FlowPaymentModel();
+  let where = { id, version: expectedVersion };
+  if (company) {
+    if (company === 'DMF') {
+      where = { id, version: expectedVersion, [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { id, version: expectedVersion, company };
+    }
+  }
+  const [count] = await Flow.update({
+    ...updates,
+    version: expectedVersion + 1,
+    updated_at: new Date()
+  }, { where });
+  if (!count) return null;
+  const row = await Flow.findOne({ where: { id, ...(company ? (company === 'DMF' ? { [Op.or]: [{ company }, { company: null }] } : { company }) : {}) } });
+  return row ? row.toJSON() : null;
+}
+
 async function updateFlowPayment(id, updates, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id };
@@ -363,6 +524,38 @@ async function updateFlowPayment(id, updates, company = null) {
   }
   await Flow.update({ ...updates, updated_at: new Date() }, { where });
   const row = await Flow.findOne({ where });
+  return row ? row.toJSON() : null;
+}
+
+async function getFlowPaymentById(id, company = null) {
+  const Flow = FlowPaymentModel();
+  let where = { id };
+  if (company) {
+    if (company === 'DMF') {
+      where = { id, [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { id, company };
+    }
+  }
+  const row = await Flow.findOne({ where });
+  return row ? row.toJSON() : null;
+}
+
+async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
+  const Flow = FlowPaymentModel();
+  let where = { id, assinatura: { [Op.is]: null } };
+  if (company) {
+    if (company === 'DMF') {
+      where = { id, assinatura: { [Op.is]: null }, [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { id, assinatura: { [Op.is]: null }, company };
+    }
+  }
+  const [count] = await Flow.update({ assinatura, updated_at: new Date() }, { where });
+  if (!count) {
+    return null;
+  }
+  const row = await Flow.findOne({ where: { id, ...(company ? (company === 'DMF' ? { [Op.or]: [{ company }, { company: null }] } : { company }) : {}) } });
   return row ? row.toJSON() : null;
 }
 
@@ -407,6 +600,75 @@ async function replaceFlowArchives(archives) {
   }
 }
 
+async function listUserCompanies(userId) {
+  const Access = UserCompanyModel();
+  const rows = await Access.findAll({ where: { user_id: userId } });
+  return rows.map(r => r.company);
+}
+
+async function replaceUserCompanies(userId, companies) {
+  const Access = UserCompanyModel();
+  await Access.destroy({ where: { user_id: userId } });
+  if (companies && companies.length) {
+    await Access.bulkCreate(companies.map(company => ({
+      user_id: userId,
+      company,
+      created_at: new Date()
+    })));
+  }
+}
+
+async function listCenterCompanies() {
+  const Center = CenterCompanyModel();
+  const rows = await Center.findAll();
+  return rows.map(r => r.toJSON());
+}
+
+async function upsertCenterCompany(centerKey, centerLabel, company) {
+  const Center = CenterCompanyModel();
+  await Center.upsert({
+    center_key: centerKey,
+    center_label: centerLabel,
+    company,
+    updated_at: new Date()
+  });
+  const row = await Center.findByPk(centerKey);
+  return row ? row.toJSON() : null;
+}
+
+async function bulkUpsertCenterCompanies(items) {
+  if (!Array.isArray(items) || !items.length) return 0;
+  let count = 0;
+  for (const item of items) {
+    const centerKey = String(item.center_key || item.center || '').trim().toLowerCase();
+    const centerLabel = String(item.center_label || item.center || '').trim();
+    const company = String(item.company || '').trim();
+    if (!centerKey || !centerLabel || !company) continue;
+    await upsertCenterCompany(centerKey, centerLabel, company);
+    count += 1;
+  }
+  return count;
+}
+
+async function insertBackupSnapshot({ createdBy, payload }) {
+  const Backup = BackupSnapshotModel();
+  const row = await Backup.create({
+    created_by: createdBy || null,
+    payload,
+    created_at: new Date()
+  });
+  return row ? row.toJSON() : null;
+}
+
+async function listBackupSnapshots(limit = 20) {
+  const Backup = BackupSnapshotModel();
+  const rows = await Backup.findAll({
+    order: [['created_at', 'DESC']],
+    limit
+  });
+  return rows.map(r => r.toJSON());
+}
+
 module.exports = {
   initDb,
   isDbReady,
@@ -424,15 +686,30 @@ module.exports = {
   listFlowPayments,
   replaceFlowPayments,
   upsertFlowPayment,
+  updateFlowPaymentWithVersion,
   updateFlowPayment,
+  getFlowPaymentById,
+  signFlowPaymentIfUnsigned,
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
   replaceFlowArchives,
+  listUserCompanies,
+  replaceUserCompanies,
+  listCenterCompanies,
+  upsertCenterCompany,
+  bulkUpsertCenterCompanies,
+  insertBackupSnapshot,
+  listBackupSnapshots,
   insertLoginAudit,
   listLoginAudits,
   insertAuditEvent,
   listAuditEvents,
+  listRoles,
+  getRoleByName,
+  upsertRole,
+  deleteRoleByName,
+  replaceRoles,
   getUserSession,
   setUserSessionRevokedAfter,
   insertWebhook,

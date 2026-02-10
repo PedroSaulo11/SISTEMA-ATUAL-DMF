@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const crypto = require('crypto');
+const path = require('path');
 const winston = require('winston');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
@@ -26,15 +27,30 @@ const {
   listFlowPayments,
   replaceFlowPayments,
   upsertFlowPayment,
+  updateFlowPaymentWithVersion,
   updateFlowPayment,
+  getFlowPaymentById,
+  signFlowPaymentIfUnsigned,
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
   replaceFlowArchives,
+  listUserCompanies,
+  replaceUserCompanies,
+  listCenterCompanies,
+  upsertCenterCompany,
+  bulkUpsertCenterCompanies,
+  insertBackupSnapshot,
+  listBackupSnapshots,
   insertLoginAudit,
   listLoginAudits,
   insertAuditEvent,
   listAuditEvents,
+  listRoles,
+  getRoleByName,
+  upsertRole,
+  deleteRoleByName,
+  replaceRoles,
   getUserSession,
   setUserSessionRevokedAfter,
   insertWebhook
@@ -46,6 +62,7 @@ const PORT = process.env.PORT || 3001;
 const EXTERNAL_API_TIMEOUT_MS = Number(process.env.EXTERNAL_API_TIMEOUT_MS || 10000);
 const CONTA_AZUL_TIMEOUT_MS = Number(process.env.CONTA_AZUL_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
 const COBLI_TIMEOUT_MS = Number(process.env.COBLI_TIMEOUT_MS || EXTERNAL_API_TIMEOUT_MS);
+const SLOW_REQUEST_THRESHOLD_MS = Number(process.env.SLOW_REQUEST_THRESHOLD_MS || 2000);
 
 function normalizeCompany(value) {
   const v = String(value || '').trim().toLowerCase();
@@ -53,6 +70,107 @@ function normalizeCompany(value) {
   if (v === 'jfx') return 'JFX';
   if (v === 'dmf') return 'DMF';
   return value ? String(value).trim() : null;
+}
+
+function normalizeRole(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+const PERMISSIONS_ENFORCED = process.env.PERMISSIONS_ENFORCED === 'true';
+const ROLE_CACHE_TTL_MS = Number(process.env.ROLE_CACHE_TTL_MS || 30000);
+const DEFAULT_ROLE_PERMISSIONS = {
+  admin: [
+    'admin_access',
+    'audit_access',
+    'audit_login_access',
+    'sign_payments',
+    'import_payments',
+    'export_payments',
+    'add_payments',
+    'delete_payments',
+    'view_archives',
+    'archive_flow',
+    'delete_archive',
+    'export_archives',
+    'compare_archives',
+    'roles_manage',
+    'user_manage',
+    'backup_restore',
+    'revoke_sessions'
+  ],
+  gestor: [
+    'sign_payments',
+    'import_payments',
+    'export_payments',
+    'add_payments',
+    'view_archives',
+    'compare_archives',
+    'audit_access',
+    'audit_login_access'
+  ],
+  user: ['sign_payments']
+};
+let roleCache = { data: {}, loadedAt: 0 };
+const ENFORCE_COMPANY_ACCESS = process.env.ENFORCE_COMPANY_ACCESS === 'true';
+const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
+let lastTokenLoadAt = 0;
+const CRON_SECRET = process.env.CRON_SECRET || '';
+
+async function loadRolePermissions(role) {
+  const normalized = normalizeRole(role);
+  if (!isDbReady()) {
+    return DEFAULT_ROLE_PERMISSIONS[normalized] || [];
+  }
+  const now = Date.now();
+  if (!roleCache.loadedAt || now - roleCache.loadedAt > ROLE_CACHE_TTL_MS) {
+    try {
+      const roles = await listRoles();
+      roleCache.data = roles.reduce((acc, r) => {
+        acc[normalizeRole(r.name)] = Array.isArray(r.permissions) ? r.permissions : [];
+        return acc;
+      }, {});
+      roleCache.loadedAt = now;
+    } catch (error) {
+      logger.warn('Failed to load roles from DB', { error: error.message });
+      return DEFAULT_ROLE_PERMISSIONS[normalized] || [];
+    }
+  }
+  return roleCache.data[normalized] || DEFAULT_ROLE_PERMISSIONS[normalized] || [];
+}
+
+async function hasPermission(role, permission) {
+  const perms = await loadRolePermissions(role);
+  return perms.includes('all') || perms.includes(permission);
+}
+
+async function resolveCompanyAccess(userId, role) {
+  if (!ENFORCE_COMPANY_ACCESS) return null;
+  if (!isDbReady()) return null;
+  if (normalizeRole(role) === 'admin') return null;
+  const companies = await listUserCompanies(userId);
+  return companies || [];
+}
+
+async function enforceCompanyAccess(req, res, next) {
+  if (!ENFORCE_COMPANY_ACCESS) return next();
+  if (!isDbReady()) return next();
+  const role = req.user?.role;
+  if (normalizeRole(role) === 'admin') return next();
+  const companies = await resolveCompanyAccess(req.user?.id, role);
+  if (!companies || companies.length === 0) {
+    await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', 'Nenhuma empresa liberada para o usuário.', {
+      userId: req.user?.id || null
+    });
+    return res.status(403).json({ error: 'Company access not configured' });
+  }
+  const requested = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+  if (!companies.includes(requested)) {
+    await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', `Acesso negado para ${requested}.`, {
+      company: requested
+    });
+    return res.status(403).json({ error: 'Company access denied' });
+  }
+  return next();
 }
 
 async function recordAuditEvent(req, action, details, metadata = null) {
@@ -113,9 +231,11 @@ if (process.env.MONITOR_ENABLED === 'true') {
 }
 
 // Security: Rate limiting
+const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 600);
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: API_RATE_LIMIT_WINDOW_MS, // 15 minutes default
+  max: API_RATE_LIMIT_MAX, // limit each IP to N requests per windowMs
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -126,6 +246,23 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: Number(process.env.AUTH_RATE_LIMIT_MAX || 5), // limit each IP to N auth attempts per windowMs
   message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Security: Critical operation rate limiting
+const criticalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: Number(process.env.CRITICAL_RATE_LIMIT_MAX || 20),
+  message: 'Too many critical requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const importLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.IMPORT_RATE_LIMIT_MAX || 30),
+  message: 'Too many import requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -161,6 +298,30 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
 }));
 
+// Monitoring: request timing and 5xx alerts
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+  res.on('finish', () => {
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    if (res.statusCode >= 500) {
+      logger.error('ALERT_HTTP_5XX', {
+        method: req.method,
+        path: req.originalUrl,
+        status: res.statusCode,
+        duration_ms: Math.round(elapsedMs)
+      });
+    } else if (elapsedMs >= SLOW_REQUEST_THRESHOLD_MS) {
+      logger.warn('ALERT_SLOW_REQUEST', {
+        method: req.method,
+        path: req.originalUrl,
+        status: res.statusCode,
+        duration_ms: Math.round(elapsedMs)
+      });
+    }
+  });
+  next();
+});
+
 // Middleware
 app.use(express.json({
   verify: (req, res, buf) => {
@@ -168,8 +329,35 @@ app.use(express.json({
   }
 }));
 
-// Serve static files
-app.use(express.static(__dirname));
+// Serve static files (allowlist only)
+const PUBLIC_FILES = new Set([
+  'index.html',
+  'style.css',
+  'script.js',
+  'assistant.js',
+  'assistant.css',
+  'verify.html',
+  'verify.js',
+  'verify.css'
+]);
+
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get('/verify', (req, res) => {
+  res.sendFile(path.join(__dirname, 'verify.html'));
+});
+
+app.get('/:file', (req, res) => {
+  const file = req.params.file;
+  if (!PUBLIC_FILES.has(file)) {
+    return res.status(404).end();
+  }
+  res.sendFile(path.join(__dirname, file));
+});
 
 // Token storage (persisted in database)
 let accessToken = null;
@@ -436,8 +624,14 @@ async function refreshAccessToken() {
 
 // Middleware to check and refresh token if needed
 async function ensureValidToken() {
+  const now = Date.now();
+  if (isDbReady() && (!lastTokenLoadAt || now - lastTokenLoadAt > TOKEN_CACHE_TTL_MS)) {
+    await loadTokensFromDb();
+    lastTokenLoadAt = now;
+  }
   if (!accessToken || !tokenExpiry) {
     await loadTokensFromDb();
+    lastTokenLoadAt = Date.now();
   }
 
   if (accessToken && !tokenExpiry) {
@@ -499,6 +693,17 @@ function logTimeout(error, context) {
 // Security: Input validation middleware
 const { body, param, query, validationResult } = require('express-validator');
 
+function validateRequest(validations) {
+  return async (req, res, next) => {
+    await Promise.all(validations.map(v => v.run(req)));
+    const errors = validationResult(req);
+    if (errors.isEmpty()) return next();
+    logger.warn('Validation failed', { path: req.path, errors: errors.array() });
+    await recordAuditEvent(req, 'VALIDATION_FAILED', `Validation failed for ${req.path}`, { errors: errors.array() });
+    return res.status(400).json({ errors: errors.array() });
+  };
+}
+
 // Security: Authentication middleware
 async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -506,6 +711,7 @@ async function authenticateToken(req, res, next) {
 
   if (!token) {
     logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
+    await recordAuditEvent(req, 'AUTH_MISSING_TOKEN', `Missing token for ${req.path}`);
     return res.status(401).json({ error: 'Access token required' });
   }
 
@@ -516,11 +722,13 @@ async function authenticateToken(req, res, next) {
       if (session?.revoked_after) {
         const iatMs = (user.iat || 0) * 1000;
         if (iatMs && iatMs < new Date(session.revoked_after).getTime()) {
+          await recordAuditEvent(req, 'AUTH_REVOKED', `Session revoked for ${req.path}`);
           return res.status(403).json({ error: 'Session revoked' });
         }
       }
       const dbUser = await getUserById(user.id);
       if (!dbUser) {
+        await recordAuditEvent(req, 'AUTH_USER_NOT_FOUND', `User not found for ${req.path}`);
         return res.status(403).json({ error: 'User not found' });
       }
     }
@@ -528,6 +736,96 @@ async function authenticateToken(req, res, next) {
     next();
   } catch (err) {
     logger.warn('Invalid token used', { error: err.message, ip: req.ip });
+    await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
+}
+
+// SSE auth: allow token via query param to support EventSource
+async function authenticateTokenFromQuery(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = (authHeader && authHeader.split(' ')[1]) || req.query?.token || req.query?.access_token;
+  if (!token) {
+    logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
+    await recordAuditEvent(req, 'AUTH_MISSING_TOKEN', `Missing token for ${req.path}`);
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  try {
+    const user = jwt.verify(String(token), JWT_SECRET);
+    if (isDbReady()) {
+      const session = await getUserSession(user.id);
+      if (session?.revoked_after) {
+        const iatMs = (user.iat || 0) * 1000;
+        if (iatMs && iatMs < new Date(session.revoked_after).getTime()) {
+          await recordAuditEvent(req, 'AUTH_REVOKED', `Session revoked for ${req.path}`);
+          return res.status(403).json({ error: 'Session revoked' });
+        }
+      }
+      const dbUser = await getUserById(user.id);
+      if (!dbUser) {
+        await recordAuditEvent(req, 'AUTH_USER_NOT_FOUND', `User not found for ${req.path}`);
+        return res.status(403).json({ error: 'User not found' });
+      }
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    logger.warn('Invalid token used', { error: err.message, ip: req.ip });
+    await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
+}
+
+// Flow payment push notifications (SSE)
+const flowSubscribers = new Set();
+function notifyFlowSubscribers(company, payload) {
+  const data = JSON.stringify(payload || {});
+  for (const sub of flowSubscribers) {
+    if (sub.company && company && sub.company !== company) continue;
+    try {
+      sub.res.write(`event: flow_update\n`);
+      sub.res.write(`data: ${data}\n\n`);
+    } catch (_) {
+      // ignore broken stream
+    }
+  }
+}
+
+// Security: Authentication middleware (accepts token in query for streaming)
+async function authenticateTokenFromQuery(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const queryToken = req.query && typeof req.query.access_token === 'string' ? req.query.access_token : null;
+  const token = (authHeader && authHeader.split(' ')[1]) || queryToken;
+
+  if (!token) {
+    logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
+    await recordAuditEvent(req, 'AUTH_MISSING_TOKEN', `Missing token for ${req.path}`);
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    if (isDbReady()) {
+      const session = await getUserSession(user.id);
+      if (session?.revoked_after) {
+        const iatMs = (user.iat || 0) * 1000;
+        if (iatMs && iatMs < new Date(session.revoked_after).getTime()) {
+          await recordAuditEvent(req, 'AUTH_REVOKED', `Session revoked for ${req.path}`);
+          return res.status(403).json({ error: 'Session revoked' });
+        }
+      }
+      const dbUser = await getUserById(user.id);
+      if (!dbUser) {
+        await recordAuditEvent(req, 'AUTH_USER_NOT_FOUND', `User not found for ${req.path}`);
+        return res.status(403).json({ error: 'User not found' });
+      }
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    logger.warn('Invalid token used', { error: err.message, ip: req.ip });
+    await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 }
@@ -552,10 +850,40 @@ function authorizeRole(requiredRole) {
         ip: req.ip,
         path: req.path
       });
+      recordAuditEvent(req, 'AUTHZ_DENIED', `Missing role ${requiredRole}`, {
+        requiredRole,
+        userRole: req.user.role
+      }).catch(() => {});
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
 
     next();
+  };
+}
+
+function authorizePermission(permission) {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    const allowed = await hasPermission(req.user.role, permission);
+    if (!allowed) {
+      logger.warn('Permission denied', {
+        user: req.user.username,
+        permission,
+        role: req.user.role,
+        ip: req.ip,
+        path: req.path
+      });
+      recordAuditEvent(req, 'PERMISSION_DENIED', `Missing permission ${permission}`, {
+        permission,
+        role: req.user.role
+      }).catch(() => {});
+      if (PERMISSIONS_ENFORCED) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
+    }
+    return next();
   };
 }
 
@@ -564,7 +892,7 @@ app.post('/api/auth/register', [
   body('username').isLength({ min: 3, max: 50 }).trim().escape().withMessage('Username must be 3-50 characters'),
   body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('role').isIn(['user', 'gestor', 'admin']).withMessage('Invalid role'),
+  body('role').optional().isIn(['user', 'gestor', 'admin']).withMessage('Invalid role'),
   body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
 ], async (req, res) => {
   try {
@@ -577,6 +905,26 @@ app.post('/api/auth/register', [
     const { username, email, password, role } = req.body;
     const normalizedUsername = String(username || '').trim();
     const normalizedEmail = String(email || '').trim().toLowerCase();
+    const requestedRole = String(role || '').trim().toLowerCase();
+    let assignedRole = 'user';
+
+    if (requestedRole && requestedRole !== 'user') {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
+      if (!token) {
+        return res.status(403).json({ error: 'Admin role required to set role' });
+      }
+      try {
+        const authUser = jwt.verify(token, JWT_SECRET);
+        const authRole = String(authUser?.role || '').trim().toLowerCase();
+        if (authRole !== 'admin') {
+          return res.status(403).json({ error: 'Admin role required to set role' });
+        }
+        assignedRole = requestedRole;
+      } catch (err) {
+        return res.status(403).json({ error: 'Admin role required to set role' });
+      }
+    }
 
     // Check if user already exists
     let existingUser = users.find(u =>
@@ -600,7 +948,7 @@ app.post('/api/auth/register', [
         username: normalizedUsername,
         email: normalizedEmail,
         passwordHash: hashedPassword,
-        role: role || 'user',
+        role: assignedRole,
         name: req.body.name || null
       });
     }
@@ -610,7 +958,7 @@ app.post('/api/auth/register', [
       username: normalizedUsername,
       email: normalizedEmail,
       password_hash: hashedPassword,
-      role: role || 'user',
+      role: assignedRole,
       name: req.body.name || null,
       created_at: new Date().toISOString(),
       last_login: null
@@ -825,7 +1173,7 @@ app.get('/api/payments', authenticateToken, authorizeRole('user'), async (req, r
 });
 
 // Shared flow payments storage (local DB)
-app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), enforceCompanyAccess, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -839,7 +1187,46 @@ app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), async (r
   }
 });
 
-app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), async (req, res) => {
+app.get('/api/flow-payments/stream', authenticateTokenFromQuery, authorizeRole('user'), enforceCompanyAccess, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const company = normalizeCompany(req.query.company) || null;
+  const subscriber = { res, company };
+  flowSubscribers.add(subscriber);
+
+  res.write(`event: flow_update\n`);
+  res.write(`data: ${JSON.stringify({ type: 'connected', company })}\n\n`);
+
+  const keepAlive = setInterval(() => {
+    res.write(': ping\n\n');
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    flowSubscribers.delete(subscriber);
+  });
+});
+
+app.post(
+  '/api/flow-payments/import',
+  authenticateToken,
+  authorizeRole('user'),
+  authorizePermission('import_payments'),
+  enforceCompanyAccess,
+  importLimiter,
+  validateRequest([
+    body('payments').optional().isArray(),
+    body().custom(bodyValue => {
+      if (Array.isArray(bodyValue)) return true;
+      if (bodyValue && Array.isArray(bodyValue.payments)) return true;
+      return false;
+    }).withMessage('Payments array required'),
+    body('company').optional().isString()
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -864,14 +1251,31 @@ app.post('/api/flow-payments/import', authenticateToken, authorizeRole('user'), 
       company,
       count: normalized.length
     });
+    notifyFlowSubscribers(company, {
+      type: 'flow_imported',
+      company,
+      count: normalized.length
+    });
     res.json({ success: true, count: normalized.length });
   } catch (error) {
     logger.error('Error importing flow payments', { error: error.message });
     res.status(500).json({ error: 'Failed to import flow payments' });
   }
-});
+  }
+);
 
-app.post('/api/flow-payments', authenticateToken, authorizeRole('user'), async (req, res) => {
+app.post(
+  '/api/flow-payments',
+  authenticateToken,
+  authorizeRole('user'),
+  authorizePermission('add_payments'),
+  enforceCompanyAccess,
+  validateRequest([
+    body('fornecedor').optional().isLength({ min: 1 }),
+    body('valor').optional().isNumeric(),
+    body('company').optional().isString()
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -888,22 +1292,54 @@ app.post('/api/flow-payments', authenticateToken, authorizeRole('user'), async (
       centro: item.centro || '',
       categoria: item.categoria || '',
       assinatura: item.assinatura || null,
+      version: Number.isFinite(item.version) ? Number(item.version) : 0,
+      updated_by: req.user?.username || null,
       created_at: new Date(),
       updated_at: new Date()
     };
-    await upsertFlowPayment(payment);
+    let saved = null;
+    if (Number.isFinite(item.version)) {
+      const expected = Number(item.version);
+      const existing = await getFlowPaymentById(payment.id, company);
+      if (existing && Number(existing.version || 0) !== expected) {
+        return res.status(409).json({
+          error: 'Version conflict',
+          current: existing
+        });
+      }
+      if (existing) {
+        saved = await updateFlowPaymentWithVersion(payment.id, payment, expected, company);
+        if (!saved) {
+          return res.status(409).json({ error: 'Version conflict' });
+        }
+      }
+    }
+    if (!saved) {
+      await upsertFlowPayment(payment);
+      saved = payment;
+    }
     await recordAuditEvent(req, 'FLOW_UPSERT', `Pagamento ${payment.id} criado/atualizado em ${company}.`, {
       company,
       paymentId: payment.id
     });
-    res.json({ success: true, payment });
+    res.json({ success: true, payment: saved });
   } catch (error) {
     logger.error('Error creating flow payment', { error: error.message });
     res.status(500).json({ error: 'Failed to create flow payment' });
   }
-});
+  }
+);
 
-app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'), async (req, res) => {
+app.patch(
+  '/api/flow-payments/:id/sign',
+  authenticateToken,
+  authorizeRole('user'),
+  authorizePermission('sign_payments'),
+  enforceCompanyAccess,
+  validateRequest([
+    param('id').notEmpty().withMessage('Payment id required')
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -911,7 +1347,15 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
     const paymentId = req.params.id;
     const assinatura = req.body?.assinatura || null;
     const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
-    const updated = await updateFlowPayment(paymentId, { assinatura }, company);
+    const updated = await signFlowPaymentIfUnsigned(paymentId, assinatura, company);
+    if (!updated) {
+      const existing = await getFlowPaymentById(paymentId, company);
+      await recordAuditEvent(req, 'FLOW_SIGN_CONFLICT', `Tentativa de assinar pagamento já assinado (${paymentId}).`, {
+        company,
+        paymentId
+      });
+      return res.status(409).json({ error: 'Pagamento já assinado', payment: existing || null });
+    }
     const payments = await listFlowPayments(company);
     const withChain = applyChainHashes(payments);
     await Promise.all(
@@ -920,6 +1364,12 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
         .map(p => updateFlowPayment(p.id, { assinatura: p.assinatura }, company))
     );
     const refreshed = withChain.find(p => String(p.id) === String(paymentId)) || updated;
+    notifyFlowSubscribers(company, {
+      type: 'payment_signed',
+      paymentId,
+      company,
+      assinatura: refreshed?.assinatura || null
+    });
     emitEventWebhook('payment_signed', {
       paymentId,
       user: req.user?.username || null,
@@ -934,10 +1384,11 @@ app.patch('/api/flow-payments/:id/sign', authenticateToken, authorizeRole('user'
     logger.error('Error signing flow payment', { error: error.message });
     res.status(500).json({ error: 'Failed to sign flow payment' });
   }
-});
+  }
+);
 
 // Archived flow snapshots
-app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), async (req, res) => {
+app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), authorizePermission('view_archives'), enforceCompanyAccess, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -960,7 +1411,17 @@ app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), async (r
   }
 });
 
-app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.post(
+  '/api/flow-archives',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('archive_flow'),
+  enforceCompanyAccess,
+  criticalLimiter,
+  validateRequest([
+    body('company').optional().isString()
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -1016,7 +1477,17 @@ app.post('/api/flow-archives', authenticateToken, authorizeRole('admin'), async 
   }
 });
 
-app.delete('/api/flow-archives/:id', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.delete(
+  '/api/flow-archives/:id',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('delete_archive'),
+  enforceCompanyAccess,
+  criticalLimiter,
+  validateRequest([
+    param('id').notEmpty().withMessage('Archive id required')
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -1034,7 +1505,7 @@ app.delete('/api/flow-archives/:id', authenticateToken, authorizeRole('admin'), 
 });
 
 // Security: Protected route to sign a payment (requires gestor or admin)
-app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), [
+app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), authorizePermission('sign_payments'), [
   param('id').notEmpty().withMessage('Payment ID required'),
 ], async (req, res) => {
   try {
@@ -1061,6 +1532,9 @@ app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), [
       paymentId,
       status: response.status
     });
+    await recordAuditEvent(req, 'PAYMENT_SIGN', `Pagamento assinado (${paymentId}).`, {
+      paymentId
+    });
     res.json({ message: 'Payment signed successfully', data: response.data });
   } catch (error) {
     logTimeout(error, { service: 'conta_azul', route: '/api/payments/:id/sign', timeout_ms: CONTA_AZUL_TIMEOUT_MS });
@@ -1076,7 +1550,7 @@ app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), [
 });
 
 // Security: Protected route to remove a payment flow (requires admin)
-app.delete('/api/payments/:id', authenticateToken, authorizeRole('admin'), [
+app.delete('/api/payments/:id', authenticateToken, authorizeRole('admin'), authorizePermission('delete_payments'), criticalLimiter, [
   param('id').notEmpty().withMessage('Payment ID required'),
 ], async (req, res) => {
   try {
@@ -1101,6 +1575,9 @@ app.delete('/api/payments/:id', authenticateToken, authorizeRole('admin'), [
       user: req.user.username,
       paymentId,
       status: response.status
+    });
+    await recordAuditEvent(req, 'PAYMENT_DELETE', `Pagamento removido (${paymentId}).`, {
+      paymentId
     });
     res.json({ message: 'Payment flow removed successfully' });
   } catch (error) {
@@ -1374,8 +1851,262 @@ app.get('/api/auth/user-status', authenticateToken, (req, res) => {
   });
 });
 
+// Cron: automated backup (App Engine)
+app.post('/tasks/backup', async (req, res) => {
+  const isCron = req.get('X-Appengine-Cron') === 'true';
+  const secret = req.get('X-Cron-Secret');
+  if (!isCron && (!CRON_SECRET || secret !== CRON_SECRET)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    if (!isDbReady()) {
+      logger.error('ALERT_DB_DOWN', { route: '/tasks/backup' });
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const users = await listUsers();
+    const payments = await listFlowPayments();
+    const archives = await listFlowArchives();
+    const payload = {
+      created_at: new Date().toISOString(),
+      users,
+      payments,
+      archives
+    };
+    await insertBackupSnapshot({ createdBy: 'cron', payload });
+    logger.info('Backup snapshot created', { count_users: users.length, count_payments: payments.length, count_archives: archives.length });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Backup cron failed', { error: error.message });
+    res.status(500).json({ error: 'Backup cron failed' });
+  }
+});
+
+// Health check
+app.get('/api/health', async (req, res) => {
+  const dbReady = isDbReady();
+  let roleCount = null;
+  if (dbReady) {
+    try {
+      const roles = await listRoles();
+      roleCount = roles.length;
+    } catch (_) {
+      roleCount = null;
+    }
+  }
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    db_ready: dbReady,
+    permissions_enforced: PERMISSIONS_ENFORCED,
+    company_access_enforced: ENFORCE_COMPANY_ACCESS,
+    roles: roleCount,
+    services: {
+      conta_azul_configured: !!CLIENT_ID && !!CLIENT_SECRET && !!TOKEN_URL,
+      cobli_configured: !!COBLI_API_BASE_URL && !!COBLI_API_TOKEN
+    },
+    tokens: {
+      conta_azul_authenticated: !!accessToken,
+      conta_azul_expires_at: tokenExpiry ? new Date(tokenExpiry).toISOString() : null
+    }
+  });
+});
+
+// Admin: list roles
+app.get('/api/roles', authenticateToken, authorizeRole('admin'), authorizePermission('roles_manage'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const roles = await listRoles();
+    res.json({ roles });
+  } catch (error) {
+    logger.error('Failed to list roles', { error: error.message });
+    res.status(500).json({ error: 'Failed to list roles' });
+  }
+});
+
+// Admin: manage user company access
+app.get('/api/users/:id/companies', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const userId = Number(req.params.id);
+    const companies = await listUserCompanies(userId);
+    res.json({ companies });
+  } catch (error) {
+    logger.error('Failed to list user companies', { error: error.message });
+    res.status(500).json({ error: 'Failed to list user companies' });
+  }
+});
+
+app.put(
+  '/api/users/:id/companies',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('user_manage'),
+  validateRequest([
+    param('id').isInt().withMessage('Valid user ID required'),
+    body('companies').isArray().withMessage('Companies array required')
+  ]),
+  async (req, res) => {
+    try {
+      if (!isDbReady()) {
+        return res.status(503).json({ error: 'Database not ready' });
+      }
+      const userId = Number(req.params.id);
+      const companies = (req.body.companies || []).map(c => normalizeCompany(c)).filter(Boolean);
+      await replaceUserCompanies(userId, Array.from(new Set(companies)));
+      await recordAuditEvent(req, 'USER_COMPANIES_UPDATED', `Empresas atualizadas para usuário ${userId}.`, {
+        userId,
+        companies
+      });
+      res.json({ success: true });
+    } catch (error) {
+      logger.error('Failed to update user companies', { error: error.message });
+      res.status(500).json({ error: 'Failed to update user companies' });
+    }
+  }
+);
+
+app.get('/api/centers/companies', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const items = await listCenterCompanies();
+    res.json({
+      items: items.map(item => ({
+        center_key: item.center_key,
+        center_label: item.center_label,
+        company: item.company
+      }))
+    });
+  } catch (error) {
+    logger.error('Error listing center companies', { error: error.message });
+    res.status(500).json({ error: 'Failed to list center companies' });
+  }
+});
+
+app.put(
+  '/api/centers/companies',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('user_manage'),
+  validateRequest([
+    body('center').notEmpty().withMessage('Center name required'),
+    body('company').notEmpty().withMessage('Company required')
+  ]),
+  async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const centerLabel = String(req.body.center || '').trim();
+    const centerKey = centerLabel.toLowerCase();
+    const company = String(req.body.company || '').trim();
+    const saved = await upsertCenterCompany(centerKey, centerLabel, company);
+    await recordAuditEvent(req, 'CENTER_COMPANY_UPDATE', `Centro ${centerLabel} → ${company}`, {
+      center: centerLabel,
+      company
+    });
+    res.json({ success: true, item: saved });
+  } catch (error) {
+    logger.error('Error updating center company', { error: error.message });
+    res.status(500).json({ error: 'Failed to update center company' });
+  }
+});
+
+app.post(
+  '/api/centers/companies/bulk',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('user_manage'),
+  validateRequest([
+    body('items').isArray().withMessage('Items array required')
+  ]),
+  async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    const count = await bulkUpsertCenterCompanies(items);
+    await recordAuditEvent(req, 'CENTER_COMPANY_BULK_UPDATE', `Centros atualizados em lote (${count}).`, {
+      count
+    });
+    res.json({ success: true, count });
+  } catch (error) {
+    logger.error('Error bulk updating center companies', { error: error.message });
+    res.status(500).json({ error: 'Failed to update center companies' });
+  }
+});
+
+// Admin: upsert role
+app.put(
+  '/api/roles/:name',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('roles_manage'),
+  validateRequest([
+    param('name').notEmpty().withMessage('Role name required'),
+    body('permissions').isArray().withMessage('Permissions array required')
+  ]),
+  async (req, res) => {
+    try {
+      if (!isDbReady()) {
+        return res.status(503).json({ error: 'Database not ready' });
+      }
+      const name = normalizeRole(req.params.name);
+      const permissions = Array.isArray(req.body.permissions)
+        ? req.body.permissions.map(p => String(p).trim()).filter(Boolean)
+        : [];
+      const updated = await upsertRole(name, permissions);
+      roleCache.loadedAt = 0;
+      await recordAuditEvent(req, 'ROLE_UPDATED', `Cargo ${name} atualizado.`, {
+        role: name,
+        permissions
+      });
+      res.json({ role: updated });
+    } catch (error) {
+      logger.error('Failed to upsert role', { error: error.message });
+      res.status(500).json({ error: 'Failed to update role' });
+    }
+  }
+);
+
+// Admin: delete role
+app.delete(
+  '/api/roles/:name',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('roles_manage'),
+  criticalLimiter,
+  validateRequest([
+    param('name').notEmpty().withMessage('Role name required')
+  ]),
+  async (req, res) => {
+    try {
+      if (!isDbReady()) {
+        return res.status(503).json({ error: 'Database not ready' });
+      }
+      const name = normalizeRole(req.params.name);
+      if (name === 'admin') {
+        return res.status(400).json({ error: 'Cannot delete admin role' });
+      }
+      const deleted = await deleteRoleByName(name);
+      roleCache.loadedAt = 0;
+      await recordAuditEvent(req, 'ROLE_DELETED', `Cargo ${name} removido.`, { role: name });
+      res.json({ deleted: Number(deleted) || 0 });
+    } catch (error) {
+      logger.error('Failed to delete role', { error: error.message });
+      res.status(500).json({ error: 'Failed to delete role' });
+    }
+  }
+);
+
 // Admin: revoke all sessions for a user
-app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), [
+app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {
@@ -1386,6 +2117,9 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), [
     const userId = Number(req.params.id);
     await setUserSessionRevokedAfter(userId, new Date());
     emitEventWebhook('user_sessions_revoked', { userId, admin: req.user?.username || null });
+    await recordAuditEvent(req, 'SESSIONS_REVOKED', `Sessões revogadas para usuário ${userId}.`, {
+      userId
+    });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to revoke sessions', { error: error.message });
@@ -1394,9 +2128,12 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), [
 });
 
 // Self: revoke current sessions (logout everywhere)
-app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, async (req, res) => {
   try {
     await setUserSessionRevokedAfter(req.user?.id, new Date());
+    await recordAuditEvent(req, 'SESSIONS_REVOKED_SELF', 'Sessões revogadas pelo próprio usuário.', {
+      userId: req.user?.id || null
+    });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to revoke own sessions', { error: error.message });
@@ -1405,7 +2142,7 @@ app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), asy
 });
 
 // Admin: list users
-app.get('/api/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.get('/api/users', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), async (req, res) => {
   try {
     let data = users.map(sanitizeUserForResponse);
     if (isDbReady()) {
@@ -1420,7 +2157,7 @@ app.get('/api/users', authenticateToken, authorizeRole('admin'), async (req, res
 });
 
 // Admin: update user
-app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
+app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), [
   param('id').isInt().withMessage('Valid user ID required'),
   body('username').optional().isLength({ min: 3, max: 50 }).trim().escape(),
   body('email').optional().isEmail().normalizeEmail(),
@@ -1483,7 +2220,17 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
         admin: req.user?.username || null
       });
     }
+    if (req.body.password) {
+      await recordAuditEvent(req, 'PASSWORD_RESET_ADMIN', `Senha redefinida para o usuário ${user.username}.`, {
+        targetUserId: user.id,
+        targetUsername: user.username
+      });
+    }
 
+    await recordAuditEvent(req, 'USER_UPDATED', `Usuário ${user.username} atualizado.`, {
+      targetUserId: user.id,
+      targetUsername: user.username
+    });
     res.json({ success: true, user: sanitizeUserForResponse(user) });
   } catch (error) {
     logger.error('Failed to update user', { error: error.message });
@@ -1492,7 +2239,7 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), [
 });
 
 // Admin: delete user
-app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), [
+app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {
@@ -1528,6 +2275,10 @@ app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), [
       admin: req.user?.username || null
     });
 
+    await recordAuditEvent(req, 'USER_DELETED', `Usuário ${user.username} removido.`, {
+      targetUserId: userId,
+      targetUsername: user.username
+    });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to delete user', { error: error.message });
@@ -1536,7 +2287,7 @@ app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), [
 });
 
 // Admin: backup (users + flow + archives)
-app.get('/api/backup', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.get('/api/backup', authenticateToken, authorizeRole('admin'), authorizePermission('backup_restore'), criticalLimiter, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -1544,6 +2295,20 @@ app.get('/api/backup', authenticateToken, authorizeRole('admin'), async (req, re
     const users = await listUsers();
     const payments = await listFlowPayments();
     const archives = await listFlowArchives();
+    await insertBackupSnapshot({
+      createdBy: req.user?.username || null,
+      payload: {
+        created_at: new Date().toISOString(),
+        users,
+        payments,
+        archives
+      }
+    });
+    await recordAuditEvent(req, 'BACKUP_CREATED', 'Backup gerado com sucesso.', {
+      users: users.length,
+      payments: payments.length,
+      archives: archives.length
+    });
     res.json({
       created_at: new Date().toISOString(),
       users,
@@ -1556,8 +2321,35 @@ app.get('/api/backup', authenticateToken, authorizeRole('admin'), async (req, re
   }
 });
 
+// Admin: list backup snapshots
+app.get('/api/backup/history', authenticateToken, authorizeRole('admin'), authorizePermission('backup_restore'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const limit = Number(req.query.limit || 20);
+    const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 20;
+    const items = await listBackupSnapshots(safeLimit);
+    res.json({ items });
+  } catch (error) {
+    logger.error('Failed to list backup snapshots', { error: error.message });
+    res.status(500).json({ error: 'Failed to list backup snapshots' });
+  }
+});
+
 // Admin: restore (users + flow + archives)
-app.post('/api/restore', authenticateToken, authorizeRole('admin'), async (req, res) => {
+app.post(
+  '/api/restore',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('backup_restore'),
+  criticalLimiter,
+  validateRequest([
+    body('users').optional().isArray(),
+    body('payments').optional().isArray(),
+    body('archives').optional().isArray()
+  ]),
+  async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -1609,12 +2401,18 @@ app.post('/api/restore', authenticateToken, authorizeRole('admin'), async (req, 
       archives: archives.length
     });
 
+    await recordAuditEvent(req, 'BACKUP_RESTORED', 'Backup restaurado.', {
+      users: users.length,
+      payments: payments.length,
+      archives: archives.length
+    });
     res.json({ success: true });
   } catch (error) {
     logger.error('Restore failed', { error: error.message });
     res.status(500).json({ error: 'Failed to restore backup' });
   }
-});
+  }
+);
 
 // CSRF error handler
 app.use((err, req, res, next) => {
