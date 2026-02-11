@@ -1,0 +1,38 @@
+<div class="card">
+                <h2>Histórico de Operações</h2>
+                <div class="admin-tabs audit-tabs">
+                    <button class="tab-btn active" data-audit-tab="logs">Logs</button>
+                    <button class="tab-btn" data-audit-tab="signature">Pesquisar Assinatura</button>
+                    <button class="tab-btn" data-audit-tab="logins">Acessos</button>
+                </div>
+                <div id="auditContent">
+                    <div id="auditLogsTab" class="audit-tab-content">
+                        <div class="audit-filters">
+                            <input type="text" id="auditLogFilter" class="styled-input" placeholder="Filtrar por usuário ou ação...">
+                            <button id="btnClearAuditFilter" class="btn btn-ghost">Limpar</button>
+                        </div>
+                        <table id="auditLogTable">
+                            <thead>
+                                <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
+                            </thead>
+                            <tbody id="auditBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="auditSignatureTab" class="audit-tab-content hidden">
+                        <div class="form-group">
+                            <label for="signatureSearchInput">ID da Assinatura:</label>
+                            <input type="text" id="signatureSearchInput" class="styled-input" placeholder="Cole o ID da assinatura">
+                        </div>
+                        <button id="signatureSearchButton" class="btn btn-primary">Pesquisar</button>
+                        <div id="signatureSearchResult" class="signature-search-result"></div>
+                    </div>
+                    <div id="auditLoginsTab" class="audit-tab-content hidden">
+                        <table id="auditLoginTable">
+                            <thead>
+                                <tr><th>Data/Hora</th><th>Usuário</th><th>IP</th><th>Status</th><th>Detalhes</th></tr>
+                            </thead>
+                            <tbody id="auditLoginsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>

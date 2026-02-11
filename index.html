@@ -55,352 +55,17 @@
     </aside>
 
     <main class="main-content">
-        <section id="dashboard" class="view">
-            <div class="card dashboard-card">
-                <h2>Visão Geral Financeira</h2>
-                <div class="dashboard-summary">
-                    <div class="summary-left">
-                        <div class="summary-title">Resumo do dia</div>
-                        <div id="nextActionText" class="summary-action">Tudo certo. Nenhum pendente.</div>
-                        <div class="summary-meta">Pendentes: <span id="pendingCount">0</span></div>
-                    </div>
-                    <div class="summary-actions">
-                        <button id="btnQuickImport" class="btn btn-primary">Importar</button>
-                        <button id="btnQuickExport" class="btn btn-ghost">Exportar XLSX</button>
-                    </div>
-                </div>
-                <div class="stats-grid dashboard-stats">
-                    <div class="stat-card">
-                        <div class="stat-title">Total Bruto</div>
-                        <div class="stat-value" id="totalBruto">R$ 0,00</div>
-                        <div class="stat-meta">Fluxo atual</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Assinados</div>
-                        <div class="stat-value" id="totalAssinados">0</div>
-                        <div class="stat-meta">Pagamentos validados</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Aguardando</div>
-                        <div class="stat-value" id="totalPendentes">0</div>
-                        <div class="stat-meta">Pendentes de assinatura</div>
-                    </div>
-                </div>
-                <div class="chart-panel">
-                    <canvas id="financeChart" height="100"></canvas>
-                </div>
-            </div>
-            <div class="card dashboard-card">
-                <div class="flex-header">
-                    <h2>Relatórios Mensais</h2>
-                    <div class="actions">
-                        <input type="month" id="reportMonth" class="styled-input">
-                        <button id="btnReportRefresh" class="btn btn-primary">Atualizar</button>
-                    </div>
-                </div>
-                <div class="reports-grid">
-                    <div>
-                        <h4>Totais por Empresa</h4>
-                        <div id="reportCompanyTotals" class="report-list"></div>
-                    </div>
-                    <div>
-                        <h4>Top Centros de Custo</h4>
-                        <div id="reportCostCenters" class="report-list"></div>
-                    </div>
-                </div>
-                <div id="budgetSection" class="budget-section">
-                    <h4>Alertas de Orçamento</h4>
-                    <div class="budget-inputs">
-                        <div class="form-group">
-                            <label for="budgetDMF">DMF (R$)</label>
-                            <input type="number" id="budgetDMF" class="styled-input" min="0" step="0.01">
-                        </div>
-                        <div class="form-group">
-                            <label for="budgetJFX">JFX (R$)</label>
-                            <input type="number" id="budgetJFX" class="styled-input" min="0" step="0.01">
-                        </div>
-                        <div class="form-group">
-                            <label for="budgetReal">Real Energy (R$)</label>
-                            <input type="number" id="budgetReal" class="styled-input" min="0" step="0.01">
-                        </div>
-                        <button id="btnSaveBudgets" class="btn btn-ghost">Salvar Orçamentos</button>
-                    </div>
-                    <div id="budgetAlerts" class="budget-alerts"></div>
-                </div>
-            </div>
-        </section>
+        <section id="dashboard" class="view" data-fragment="dashboard.fragment.html"></section>
 
-        <section id="payments" class="view hidden">
-            <div class="card">
-                <div class="flex-header">
-                    <h2 id="paymentsTitle">Fluxo de Pagamentos</h2>
-                    <div class="actions">
-                        <button id="btnClearPayments" class="btn btn-danger">Remover Todo Fluxo</button>
-                        <button id="btnExportPayments" class="btn btn-ghost">Exportar XLSX</button>
-                        <button id="btnImportPayments" class="btn btn-primary">Importar Conta Azul</button>
-                        <button id="btnRefreshPayments" class="btn btn-ghost">Recarregar do servidor</button>
-                        <button id="btnAddPayment" class="btn btn-primary">Adicionar Pagamento</button> <!-- ALTERADO -->
-                    </div>
-                </div>
-                <div id="flowSyncStatus" class="flow-sync-status">Sincronizando com o servidor...</div>
-                <div class="flow-status-row">
-                    <span id="flowLastSync" class="status-pill">Última sincronização: —</span>
-                    <span id="flowLastSignature" class="status-pill">Última assinatura: —</span>
-                </div>
-                <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden">
-                
-                <div class="admin-tabs payments-tabs">
-                    <button class="tab-btn active" data-payments-tab="current">Fluxo Atual</button>
-                    <button class="tab-btn" data-payments-tab="history">Fluxos Anteriores</button>
-                </div>
+        <section id="payments" class="view hidden" data-fragment="payments.fragment.html"></section>
 
-                <div id="paymentsCurrentTab" class="payments-tab-content">
-                    <div class="payments-filters">
-                        <input type="text" id="paymentsQuickSearch" class="styled-input" placeholder="Buscar por fornecedor, centro, categoria, valor...">
-                        <button id="btnFilterPending" class="btn btn-ghost">Somente pendentes</button>
-                        <button id="btnClearPaymentsFilter" class="btn btn-ghost">Limpar</button>
-                        <div id="paymentsFilterCount" class="filter-count">Mostrando 0</div>
-                    </div>
-                    <div class="data-table-wrapper data-table-spaced">
-                        <table id="paymentsTable">
-                            <thead>
-                                <tr>
-                                    <th>Fornecedor</th>
-                                    <th>Data</th>
-                                    <th>Descrição</th>
-                                    <th>Valor</th>
-                                    <th>Categoria</th>
-                                    <th>Centro de Custo</th>
-                                    <th>Status</th>
-                                    <th>Assinatura</th>
-                                    <th>Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody id="paymentsBody"></tbody>
-                        </table>
-                    </div>
-                    <div id="companyTotals" class="company-totals">
-                        <div class="company-totals-header">Totais por Empresa</div>
-                        <div id="companyTotalsBody" class="company-totals-body"></div>
-                    </div>
-                </div>
+        <section id="audit" class="view hidden" data-fragment="audit.fragment.html"></section>
 
-                <div id="paymentsHistoryTab" class="payments-tab-content hidden">
-                    <div class="flex-header">
-                        <h3>Fluxos Anteriores</h3>
-                        <div class="actions">
-                            <button id="btnArchiveFlow" class="btn btn-ghost">Enviar para Fluxos Anteriores</button>
-                            <button id="btnRefreshArchives" class="btn btn-ghost">Recarregar Fluxos</button>
-                        </div>
-                    </div>
-                    <div class="archive-summary">
-                        <div class="archive-summary-card">
-                            <div class="summary-label">Fluxos arquivados</div>
-                            <div id="archiveTotalCount" class="summary-value">0</div>
-                            <div id="archiveSummaryRange" class="summary-meta">Todos os períodos</div>
-                        </div>
-                        <div class="archive-summary-card">
-                            <div class="summary-label">Total de pagamentos</div>
-                            <div id="archiveTotalPayments" class="summary-value">0</div>
-                            <div class="summary-meta">Somando todos os fluxos</div>
-                        </div>
-                        <div class="archive-summary-card">
-                            <div class="summary-label">Valor total</div>
-                            <div id="archiveTotalValue" class="summary-value">R$ 0,00</div>
-                            <div class="summary-meta">Assinados: <span id="archiveTotalSigned">0</span></div>
-                        </div>
-                    </div>
-                    <div class="archive-toolbar">
-                        <div class="archive-search">
-                            <input type="text" id="archiveSearchInput" class="styled-input" placeholder="Buscar por nome do fluxo, empresa ou criador...">
-                        </div>
-                        <div class="archive-quick-filters">
-                            <button class="btn btn-ghost" data-archive-range="7">Últimos 7 dias</button>
-                            <button class="btn btn-ghost" data-archive-range="30">Últimos 30 dias</button>
-                            <button class="btn btn-ghost" data-archive-range="90">Últimos 90 dias</button>
-                            <button class="btn btn-ghost" data-archive-range="all">Tudo</button>
-                        </div>
-                        <div class="archive-sort">
-                            <select id="archiveSort" class="styled-input">
-                                <option value="newest">Mais recentes</option>
-                                <option value="oldest">Mais antigos</option>
-                                <option value="value_desc">Maior valor</option>
-                                <option value="count_desc">Mais pagamentos</option>
-                            </select>
-                        </div>
-                        <div id="archiveResultsCount" class="archive-results-count">Mostrando 0</div>
-                    </div>
-                    <div class="archive-filters">
-                        <div class="form-group">
-                            <label for="archiveStart">Data inicial</label>
-                            <input type="date" id="archiveStart" class="styled-input">
-                        </div>
-                        <div class="form-group">
-                            <label for="archiveEnd">Data final</label>
-                            <input type="date" id="archiveEnd" class="styled-input">
-                        </div>
-                        <button id="btnFilterArchives" class="btn btn-primary">Filtrar</button>
-                        <button id="btnClearArchiveFilter" class="btn btn-ghost">Limpar</button>
-                    </div>
-                    <div class="archive-compare">
-                        <div class="form-group">
-                            <label for="archiveCompareA">Comparar A</label>
-                            <select id="archiveCompareA" class="styled-input"></select>
-                        </div>
-                        <div class="form-group">
-                            <label for="archiveCompareB">Comparar B</label>
-                            <select id="archiveCompareB" class="styled-input"></select>
-                        </div>
-                        <button id="btnCompareArchives" class="btn btn-primary">Comparar</button>
-                        <div id="archiveCompareResult" class="archive-compare-result"></div>
-                    </div>
-                    <div id="flowArchivesList" class="flow-archives-list"></div>
-                    <div id="flowArchiveDetail" class="flow-archive-detail"></div>
-                </div>
-            </div>
-        </section>
+        <section id="admin" class="view hidden" data-fragment="admin.fragment.html"></section>
 
-        <section id="audit" class="view hidden">
-            <div class="card">
-                <h2>Histórico de Operações</h2>
-                <div class="admin-tabs audit-tabs">
-                    <button class="tab-btn active" data-audit-tab="logs">Logs</button>
-                    <button class="tab-btn" data-audit-tab="signature">Pesquisar Assinatura</button>
-                    <button class="tab-btn" data-audit-tab="logins">Acessos</button>
-                </div>
-                <div id="auditContent">
-                    <div id="auditLogsTab" class="audit-tab-content">
-                        <div class="audit-filters">
-                            <input type="text" id="auditLogFilter" class="styled-input" placeholder="Filtrar por usuário ou ação...">
-                            <button id="btnClearAuditFilter" class="btn btn-ghost">Limpar</button>
-                        </div>
-                        <table id="auditLogTable">
-                            <thead>
-                                <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
-                            </thead>
-                            <tbody id="auditBody"></tbody>
-                        </table>
-                    </div>
-                    <div id="auditSignatureTab" class="audit-tab-content hidden">
-                        <div class="form-group">
-                            <label for="signatureSearchInput">ID da Assinatura:</label>
-                            <input type="text" id="signatureSearchInput" class="styled-input" placeholder="Cole o ID da assinatura">
-                        </div>
-                        <button id="signatureSearchButton" class="btn btn-primary">Pesquisar</button>
-                        <div id="signatureSearchResult" class="signature-search-result"></div>
-                    </div>
-                    <div id="auditLoginsTab" class="audit-tab-content hidden">
-                        <table id="auditLoginTable">
-                            <thead>
-                                <tr><th>Data/Hora</th><th>Usuário</th><th>IP</th><th>Status</th><th>Detalhes</th></tr>
-                            </thead>
-                            <tbody id="auditLoginsBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
+        <section id="assistente" class="view hidden" data-fragment="assistente.fragment.html"></section>
 
-        <section id="admin" class="view hidden">
-            <div class="card">
-                <h2>Administração</h2>
-                <div class="admin-tabs">
-                    <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
-                    <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
-                    <button class="tab-btn" data-admin-tab="centers">Permissões Centros</button>
-                    <button class="tab-btn" data-admin-tab="backup">Backup/Restore</button>
-                </div>
-                <div id="adminContent">
-                    <div id="usersTab" class="admin-tab-content">
-                        <h3>Usuários do Sistema</h3>
-                        <button id="btnCreateUser" class="btn btn-primary">Criar Usuário</button>
-                        <div id="userGrid"></div>
-                    </div>
-                    <div id="rolesTab" class="admin-tab-content hidden">
-                        <h3>Cargos e Permissões</h3>
-                        <button id="btnCreateRole" class="btn btn-primary">Criar Novo Cargo</button>
-                        <div id="rolesGrid"></div>
-                    </div>
-                    <div id="centersTab" class="admin-tab-content hidden">
-                        <h3>Permissões por Centro de Custo</h3>
-                        <div id="centerPermissionGrid" class="center-permission-grid"></div>
-                        <div class="center-permission-note">
-                            Esta aba define quais centros de custo cada usuário pode acessar. Use para restringir ou liberar centros específicos por pessoa.
-                        </div>
-                        <div class="card center-company-card">
-                            <div class="flex-header">
-                                <h4>Centros de Custo por Empresa</h4>
-                                <div class="actions">
-                                    <input type="text" id="centerCompanySearch" class="styled-input" placeholder="Buscar centro de custo...">
-                                    <button id="btnSaveCenterCompanies" class="btn btn-primary">Salvar tudo</button>
-                                </div>
-                            </div>
-                            <div id="centerCompanySummary" class="center-company-summary"></div>
-                            <div id="centerCompanyGrid" class="center-company-grid"></div>
-                        </div>
-                    </div>
-                    <div id="backupTab" class="admin-tab-content hidden">
-                        <h3>Backup e Restauração</h3>
-                        <div class="actions">
-                            <button id="btnBackupDownload" class="btn btn-primary">Baixar Backup</button>
-                            <button id="btnBackupUpload" class="btn btn-ghost">Restaurar Backup</button>
-                            <input type="file" id="backupFileInput" class="hidden" accept=".json">
-                        </div>
-                        <div class="hint">A restauração substitui usuários, fluxos atuais e fluxos anteriores.</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="assistente" class="view hidden">
-            <div class="card">
-                <h2>Assistente Virtual</h2>
-                <div id="chatContainer" class="chat-container">
-                    <div id="chatMessages" class="chat-messages"></div>
-                    <div class="chat-input-area">
-                        <input type="text" id="chatInput" placeholder="Digite sua pergunta..." class="chat-input">
-                        <button id="chatSendBtn" class="btn btn-primary chat-send-btn">Enviar</button>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="cobli" class="view hidden">
-            <div class="card">
-                <h2>Painel Cobli</h2>
-                <div class="stats-grid cobli-stats">
-                    <div class="stat-card">
-                        <div class="stat-title">Veículos Cadastrados</div>
-                        <div class="stat-value" id="veiculosCadastrados">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Locais de Interesse</div>
-                        <div class="stat-value" id="locaisInteresse">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Eventos Velocidade Veículo</div>
-                        <div class="stat-value" id="eventosVelocidadeVeiculo">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Eventos Velocidade Via</div>
-                        <div class="stat-value" id="eventosVelocidadeVia">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Rotas com Veículo</div>
-                        <div class="stat-value" id="rotasComVeiculo">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Rotas sem Veículo</div>
-                        <div class="stat-value" id="rotasSemVeiculo">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-title">Produtividade Média Frota</div>
-                        <div class="stat-value" id="produtividadeMedia">0%</div>
-                    </div>
-                </div>
-                <div id="mapContainer" class="map-container"></div>
-            </div>
-        </section>
+        <section id="cobli" class="view hidden" data-fragment="cobli.fragment.html"></section>
     </main>
 </div>
 
@@ -655,7 +320,43 @@
   </div>
 </div>
 
-<script src="script.js"></script>
-<script src="assistant.js"></script>
+<script>
+(async function loadAppWithFragments() {
+    try {
+        const sections = document.querySelectorAll('section[data-fragment]');
+
+        for (const section of sections) {
+            const file = section.getAttribute('data-fragment');
+            if (!file) continue;
+            const response = await fetch(`/${file}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Falha ao carregar fragmento ${file}: HTTP ${response.status}`);
+            }
+            const html = await response.text();
+            const parsed = new DOMParser().parseFromString(html, 'text/html');
+            const bodyHtml = parsed?.body?.innerHTML;
+            section.innerHTML = bodyHtml && bodyHtml.trim() ? bodyHtml : html;
+        }
+
+        await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'script.js';
+            script.onload = resolve;
+            script.onerror = () => reject(new Error('Falha ao carregar script.js'));
+            document.body.appendChild(script);
+        });
+
+        const assistant = document.createElement('script');
+        assistant.src = 'assistant.js';
+        document.body.appendChild(assistant);
+    } catch (error) {
+        console.error('Erro ao carregar a interface:', error);
+        const app = document.getElementById('appSection');
+        if (app) {
+            app.insertAdjacentHTML('afterbegin', '<div class=\"card\" style=\"margin:16px;\">Falha ao carregar a interface. Recarregue a página.</div>');
+        }
+    }
+})();
+</script>
 </body>
 </html>

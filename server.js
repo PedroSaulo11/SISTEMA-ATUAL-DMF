@@ -126,6 +126,7 @@ const DEFAULT_ROLE_PERMISSIONS = {
 };
 let roleCache = { data: {}, loadedAt: 0 };
 const ENFORCE_COMPANY_ACCESS = process.env.ENFORCE_COMPANY_ACCESS === 'true';
+const ALLOW_ALL_COMPANIES_WHEN_UNSET = process.env.ALLOW_ALL_COMPANIES_WHEN_UNSET !== 'false';
 const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
 let lastTokenLoadAt = 0;
 const CRON_SECRET = process.env.CRON_SECRET || '';
@@ -172,6 +173,9 @@ async function enforceCompanyAccess(req, res, next) {
   if (normalizeRole(role) === 'admin') return next();
   const companies = await resolveCompanyAccess(req.user?.id, role);
   if (!companies || companies.length === 0) {
+    if (ALLOW_ALL_COMPANIES_WHEN_UNSET) {
+      return next();
+    }
     await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', 'Nenhuma empresa liberada para o usuário.', {
       userId: req.user?.id || null
     });
@@ -346,6 +350,18 @@ app.use(express.json({
 // Serve static files (allowlist only)
 const PUBLIC_FILES = new Set([
   'index.html',
+  'dashboard.html',
+  'payments.html',
+  'audit.html',
+  'admin.html',
+  'assistente.html',
+  'cobli.html',
+  'dashboard.fragment.html',
+  'payments.fragment.html',
+  'audit.fragment.html',
+  'admin.fragment.html',
+  'assistente.fragment.html',
+  'cobli.fragment.html',
   'style.css',
   'script.js',
   'assistant.js',
@@ -853,8 +869,10 @@ function authorizeRole(requiredRole) {
     }
 
     const roleHierarchy = { 'user': 1, 'gestor': 2, 'admin': 3 };
-    const userRoleLevel = roleHierarchy[req.user.role] || 0;
-    const requiredRoleLevel = roleHierarchy[requiredRole] || 0;
+    const normalizedUserRole = normalizeRole(req.user.role);
+    const normalizedRequired = normalizeRole(requiredRole);
+    const userRoleLevel = roleHierarchy[normalizedUserRole] || 1;
+    const requiredRoleLevel = roleHierarchy[normalizedRequired] || 1;
 
     if (userRoleLevel < requiredRoleLevel) {
       logger.warn('Insufficient permissions', {
@@ -1329,7 +1347,7 @@ app.post(
       }
     }
     if (!saved) {
-      await upsertFlowPayment(payment);
+    await upsertFlowPayment(payment);
       saved = payment;
     }
     await recordAuditEvent(req, 'FLOW_UPSERT', `Pagamento ${payment.id} criado/atualizado em ${company}.`, {

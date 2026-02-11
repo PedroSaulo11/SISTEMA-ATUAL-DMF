@@ -1,0 +1,127 @@
+<div class="card">
+                <div class="flex-header">
+                    <h2 id="paymentsTitle">Fluxo de Pagamentos</h2>
+                    <div class="actions">
+                        <button id="btnClearPayments" class="btn btn-danger">Remover Todo Fluxo</button>
+                        <button id="btnExportPayments" class="btn btn-ghost">Exportar XLSX</button>
+                        <button id="btnImportPayments" class="btn btn-primary">Importar Conta Azul</button>
+                        <button id="btnRefreshPayments" class="btn btn-ghost">Recarregar do servidor</button>
+                        <button id="btnAddPayment" class="btn btn-primary">Adicionar Pagamento</button> <!-- ALTERADO -->
+                    </div>
+                </div>
+                <div id="flowSyncStatus" class="flow-sync-status">Sincronizando com o servidor...</div>
+                <div class="flow-status-row">
+                    <span id="flowLastSync" class="status-pill">Última sincronização: —</span>
+                    <span id="flowLastSignature" class="status-pill">Última assinatura: —</span>
+                </div>
+                <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden">
+                
+                <div class="admin-tabs payments-tabs">
+                    <button class="tab-btn active" data-payments-tab="current">Fluxo Atual</button>
+                    <button class="tab-btn" data-payments-tab="history">Fluxos Anteriores</button>
+                </div>
+
+                <div id="paymentsCurrentTab" class="payments-tab-content">
+                    <div class="payments-filters">
+                        <input type="text" id="paymentsQuickSearch" class="styled-input" placeholder="Buscar por fornecedor, centro, categoria, valor...">
+                        <button id="btnFilterPending" class="btn btn-ghost">Somente pendentes</button>
+                        <button id="btnClearPaymentsFilter" class="btn btn-ghost">Limpar</button>
+                        <div id="paymentsFilterCount" class="filter-count">Mostrando 0</div>
+                    </div>
+                    <div class="data-table-wrapper data-table-spaced">
+                        <table id="paymentsTable">
+                            <thead>
+                                <tr>
+                                    <th>Fornecedor</th>
+                                    <th>Data</th>
+                                    <th>Descrição</th>
+                                    <th>Valor</th>
+                                    <th>Categoria</th>
+                                    <th>Centro de Custo</th>
+                                    <th>Status</th>
+                                    <th>Assinatura</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody id="paymentsBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="companyTotals" class="company-totals">
+                        <div class="company-totals-header">Totais por Empresa</div>
+                        <div id="companyTotalsBody" class="company-totals-body"></div>
+                    </div>
+                </div>
+
+                <div id="paymentsHistoryTab" class="payments-tab-content hidden">
+                    <div class="flex-header">
+                        <h3>Fluxos Anteriores</h3>
+                        <div class="actions">
+                            <button id="btnArchiveFlow" class="btn btn-ghost">Enviar para Fluxos Anteriores</button>
+                            <button id="btnRefreshArchives" class="btn btn-ghost">Recarregar Fluxos</button>
+                        </div>
+                    </div>
+                    <div class="archive-summary">
+                        <div class="archive-summary-card">
+                            <div class="summary-label">Fluxos arquivados</div>
+                            <div id="archiveTotalCount" class="summary-value">0</div>
+                            <div id="archiveSummaryRange" class="summary-meta">Todos os períodos</div>
+                        </div>
+                        <div class="archive-summary-card">
+                            <div class="summary-label">Total de pagamentos</div>
+                            <div id="archiveTotalPayments" class="summary-value">0</div>
+                            <div class="summary-meta">Somando todos os fluxos</div>
+                        </div>
+                        <div class="archive-summary-card">
+                            <div class="summary-label">Valor total</div>
+                            <div id="archiveTotalValue" class="summary-value">R$ 0,00</div>
+                            <div class="summary-meta">Assinados: <span id="archiveTotalSigned">0</span></div>
+                        </div>
+                    </div>
+                    <div class="archive-toolbar">
+                        <div class="archive-search">
+                            <input type="text" id="archiveSearchInput" class="styled-input" placeholder="Buscar por nome do fluxo, empresa ou criador...">
+                        </div>
+                        <div class="archive-quick-filters">
+                            <button class="btn btn-ghost" data-archive-range="7">Últimos 7 dias</button>
+                            <button class="btn btn-ghost" data-archive-range="30">Últimos 30 dias</button>
+                            <button class="btn btn-ghost" data-archive-range="90">Últimos 90 dias</button>
+                            <button class="btn btn-ghost" data-archive-range="all">Tudo</button>
+                        </div>
+                        <div class="archive-sort">
+                            <select id="archiveSort" class="styled-input">
+                                <option value="newest">Mais recentes</option>
+                                <option value="oldest">Mais antigos</option>
+                                <option value="value_desc">Maior valor</option>
+                                <option value="count_desc">Mais pagamentos</option>
+                            </select>
+                        </div>
+                        <div id="archiveResultsCount" class="archive-results-count">Mostrando 0</div>
+                    </div>
+                    <div class="archive-filters">
+                        <div class="form-group">
+                            <label for="archiveStart">Data inicial</label>
+                            <input type="date" id="archiveStart" class="styled-input">
+                        </div>
+                        <div class="form-group">
+                            <label for="archiveEnd">Data final</label>
+                            <input type="date" id="archiveEnd" class="styled-input">
+                        </div>
+                        <button id="btnFilterArchives" class="btn btn-primary">Filtrar</button>
+                        <button id="btnClearArchiveFilter" class="btn btn-ghost">Limpar</button>
+                    </div>
+                    <div class="archive-compare">
+                        <div class="form-group">
+                            <label for="archiveCompareA">Comparar A</label>
+                            <select id="archiveCompareA" class="styled-input"></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="archiveCompareB">Comparar B</label>
+                            <select id="archiveCompareB" class="styled-input"></select>
+                        </div>
+                        <button id="btnCompareArchives" class="btn btn-primary">Comparar</button>
+                        <div id="archiveCompareResult" class="archive-compare-result"></div>
+                    </div>
+                    <div id="flowArchivesList" class="flow-archives-list"></div>
+                    <div id="flowArchiveDetail" class="flow-archive-detail"></div>
+                </div>
+            </div>

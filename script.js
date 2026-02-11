@@ -507,9 +507,15 @@ class DataProcessor {
                 }
             });
             if (!response.ok) {
-                if (response.status === 401 || response.status === 403) {
+                if (response.status === 401) {
                     console.warn('Flow payments fetch unauthorized');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    this.resetFlowBackoff();
+                    return false;
+                }
+                if (response.status === 403) {
+                    console.warn('Flow payments fetch forbidden');
+                    setFlowSyncStatus('Sem permissão para acessar o fluxo.', 'warn');
                     this.resetFlowBackoff();
                     return false;
                 }
@@ -907,9 +913,13 @@ class DataProcessor {
                 body: JSON.stringify({ company: this.currentCompany, payments: this.records })
             });
             if (!response.ok) {
-                if (response.status === 401 || response.status === 403) {
+                if (response.status === 401) {
                     alert('Sessão expirada. Faça login novamente para sincronizar o fluxo.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                }
+                if (response.status === 403) {
+                    alert('Sem permissão para sincronizar o fluxo.');
+                    setFlowSyncStatus('Sem permissão para sincronizar o fluxo.', 'warn');
                 }
                 console.warn('Flow payments import failed:', response.status);
                 if (response.status !== 401 && response.status !== 403) {
@@ -1320,9 +1330,13 @@ class DataProcessor {
                 body: JSON.stringify({ ...record, company: this.currentCompany })
             });
             if (!response.ok) {
-                if (response.status === 401 || response.status === 403) {
+                if (response.status === 401) {
                     alert('Sessão expirada. Faça login novamente para sincronizar o pagamento.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                }
+                if (response.status === 403) {
+                    alert('Sem permissão para sincronizar o pagamento.');
+                    setFlowSyncStatus('Sem permissão para sincronizar o pagamento.', 'warn');
                 }
                 console.warn('Flow payment create failed:', response.status);
                 if (response.status !== 401 && response.status !== 403) {
@@ -1709,7 +1723,34 @@ class UIManager {
         this.initQuickActions();
         this.initPaymentsFilters();
         this.initAuditFilters();
+        this.applyInitialRouteFromUrl();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
+    }
+
+    applyInitialRouteFromUrl() {
+        const params = new URLSearchParams(window.location.search || '');
+        const tab = String(params.get('tab') || '').trim().toLowerCase();
+        if (!tab) return;
+
+        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli']);
+        if (!allowed.has(tab)) return;
+
+        if (tab === 'payments') {
+            const companyRaw = String(params.get('company') || '').trim();
+            const company = this.normalizeCompany(companyRaw || this.companyFilter || 'DMF');
+            const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
+            let targetButton = allPaymentButtons.find(btn =>
+                this.normalizeCompany(btn.getAttribute('data-company')) === company
+            );
+            if (!targetButton) {
+                targetButton = allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
+            }
+            this.navigate('payments', targetButton || null);
+            return;
+        }
+
+        const btn = document.querySelector(`[data-nav="${tab}"]`);
+        this.navigate(tab, btn || null);
     }
 
     startBackendStatusMonitor() {
@@ -4241,7 +4282,7 @@ function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = nu
 }
 
 // Event listeners for modal forms
-document.addEventListener('DOMContentLoaded', function() {
+function initDomBindings() {
     const createUserForm = document.getElementById('createUserForm');
     const createRoleForm = document.getElementById('createRoleForm');
     const editUserForm = document.getElementById('editUserForm');
@@ -4689,7 +4730,13 @@ document.addEventListener('DOMContentLoaded', function() {
         system.ui.addPaymentFromModal(); // ALTERADO
       }); // ALTERADO
     } // ALTERADO
-});
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDomBindings);
+} else {
+    initDomBindings();
+}
 
 // Test function to verify DMF_CONTEXT updates
 function testDMFContextUpdates() {

@@ -1,0 +1,48 @@
+<div class="card">
+                <h2>Administração</h2>
+                <div class="admin-tabs">
+                    <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
+                    <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
+                    <button class="tab-btn" data-admin-tab="centers">Permissões Centros</button>
+                    <button class="tab-btn" data-admin-tab="backup">Backup/Restore</button>
+                </div>
+                <div id="adminContent">
+                    <div id="usersTab" class="admin-tab-content">
+                        <h3>Usuários do Sistema</h3>
+                        <button id="btnCreateUser" class="btn btn-primary">Criar Usuário</button>
+                        <div id="userGrid"></div>
+                    </div>
+                    <div id="rolesTab" class="admin-tab-content hidden">
+                        <h3>Cargos e Permissões</h3>
+                        <button id="btnCreateRole" class="btn btn-primary">Criar Novo Cargo</button>
+                        <div id="rolesGrid"></div>
+                    </div>
+                    <div id="centersTab" class="admin-tab-content hidden">
+                        <h3>Permissões por Centro de Custo</h3>
+                        <div id="centerPermissionGrid" class="center-permission-grid"></div>
+                        <div class="center-permission-note">
+                            Esta aba define quais centros de custo cada usuário pode acessar. Use para restringir ou liberar centros específicos por pessoa.
+                        </div>
+                        <div class="card center-company-card">
+                            <div class="flex-header">
+                                <h4>Centros de Custo por Empresa</h4>
+                                <div class="actions">
+                                    <input type="text" id="centerCompanySearch" class="styled-input" placeholder="Buscar centro de custo...">
+                                    <button id="btnSaveCenterCompanies" class="btn btn-primary">Salvar tudo</button>
+                                </div>
+                            </div>
+                            <div id="centerCompanySummary" class="center-company-summary"></div>
+                            <div id="centerCompanyGrid" class="center-company-grid"></div>
+                        </div>
+                    </div>
+                    <div id="backupTab" class="admin-tab-content hidden">
+                        <h3>Backup e Restauração</h3>
+                        <div class="actions">
+                            <button id="btnBackupDownload" class="btn btn-primary">Baixar Backup</button>
+                            <button id="btnBackupUpload" class="btn btn-ghost">Restaurar Backup</button>
+                            <input type="file" id="backupFileInput" class="hidden" accept=".json">
+                        </div>
+                        <div class="hint">A restauração substitui usuários, fluxos atuais e fluxos anteriores.</div>
+                    </div>
+                </div>
+            </div>
