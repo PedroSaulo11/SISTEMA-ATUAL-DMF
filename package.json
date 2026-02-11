@@ -7,7 +7,11 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "start:webhook": "node webhook-server.js",
-    "dev:webhook": "nodemon webhook-server.js"
+    "dev:webhook": "nodemon webhook-server.js",
+    "check:syntax": "node --check server.js && node --check script.js && node --check bootstrap.js",
+    "check:security": "node scripts/security-check.js",
+    "smoke:health": "node scripts/smoke-health.js",
+    "check:phase3": "npm run check:syntax && npm run check:security && npm run smoke:health"
   },
   "dependencies": {
     "animate.css": "^4.1.1",

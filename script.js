@@ -45,6 +45,11 @@ function getApiBase() {
     return window.location.origin;
 }
 
+function isLocalRuntime() {
+    const host = (window.location && window.location.hostname) ? window.location.hostname : '';
+    return host === 'localhost' || host === '127.0.0.1';
+}
+
 function getAuthHeaders() {
     const token = localStorage.getItem('dmf_api_token');
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -249,6 +254,7 @@ class DMFSystem {
             PAYMENTS: 'dmf_enterprise_data',
             LOGS: 'dmf_enterprise_audit',
             SESSION: 'dmf_active_session',
+            CURRENT_COMPANY: 'dmf_current_company',
             COST_CENTERS: 'dmf_enterprise_cost_centers', // ALTERADO
             COST_CENTER_RULES: 'dmf_enterprise_cc_permissions'
         };
@@ -299,7 +305,8 @@ class AuthManager {
                 const apiUser = {
                     ...data.user,
                     cargo: apiRole,
-                    nome: data.user.name || data.user.username
+                    nome: data.user.name || data.user.username,
+                    additionalPermissions: Array.isArray(data.user.permissions) ? data.user.permissions : []
                 };
                 localStorage.setItem('dmf_api_token', data.token);
                 this.setSession(apiUser);
@@ -308,7 +315,12 @@ class AuthManager {
             alert("Falha na autenticação.");
             return;
         } catch (error) {
-            console.warn('API login failed, falling back to local auth:', error.message);
+            console.warn('API login failed:', error.message);
+            if (!isLocalRuntime()) {
+                alert("Falha na autenticação.");
+                return;
+            }
+            console.warn('Local runtime detected, using local auth fallback.');
         }
 
         // Verificar usuários armazenados por usuario ou email
@@ -325,8 +337,11 @@ class AuthManager {
 
     setSession(user) {
         const normalizedCargo = normalizeRole(user.cargo || user.role);
-        this.core.currentUser = { ...user, cargo: normalizedCargo };
-        localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(user));
+        const additionalPermissions = Array.isArray(user.additionalPermissions)
+            ? user.additionalPermissions
+            : (Array.isArray(user.permissions) ? user.permissions : []);
+        this.core.currentUser = { ...user, cargo: normalizedCargo, additionalPermissions };
+        localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(this.core.currentUser));
         window.DMF_CONTEXT.usuarioLogado = this.core.currentUser;
         console.log('DMF_CONTEXT after setSession:', window.DMF_CONTEXT);
         this.core.ui.setupDashboard();
@@ -345,7 +360,8 @@ class AuthManager {
 class DataProcessor {
     constructor(core) {
         this.core = core;
-        this.currentCompany = 'DMF';
+        const persistedCompany = localStorage.getItem(core.storageKeys.CURRENT_COMPANY);
+        this.currentCompany = this.normalizeCompany(persistedCompany || 'DMF');
         this.records = this.loadCompanyPayments(this.currentCompany);
         this.archives = [];
         this.flowFetchInFlight = false;
@@ -415,7 +431,7 @@ class DataProcessor {
         const filtered = this.getPaymentsByMonth(monthKey);
         const totals = {};
         filtered.forEach(p => {
-            const key = String(p.centro || 'Geral').trim() || 'Geral';
+            const key = String(p.centro || 'Sem centro').trim() || 'Sem centro';
             totals[key] = (totals[key] || 0) + Math.abs(Number(p.valor) || 0);
         });
         return totals;
@@ -462,6 +478,7 @@ class DataProcessor {
 
     setCurrentCompany(company) {
         this.currentCompany = this.normalizeCompany(company);
+        localStorage.setItem(this.core.storageKeys.CURRENT_COMPANY, this.currentCompany);
         this.records = this.loadCompanyPayments(this.currentCompany);
         window.DMF_CONTEXT.pagamentos = this.records;
         window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
@@ -755,7 +772,7 @@ class DataProcessor {
                         data: r['Data prevista'] || 'Pendente',
                         descricao: descricao,
                         valor: Math.abs(Number(r['Valor no Centro de Custo 1'] || r['Valor original da parcela (R$)'] || 0)),
-                        centro: r['Centro de Custo 1'] || 'Geral',
+                        centro: String(r['Centro de Custo 1'] || '').trim(),
                         categoria: r['Categoria'] || r['Categoria 1'] || r['Categoria da despesa'] || '',
                         assinatura: null,
                         timestamp: new Date().toISOString()
@@ -957,7 +974,7 @@ class DataProcessor {
         const totalsByCompany = {};
         (this.records || []).forEach((p) => {
             const company = this.getPaymentCompany(p);
-            const center = String(p.centro || 'Geral').trim() || 'Geral';
+            const center = String(p.centro || 'Sem centro').trim() || 'Sem centro';
             const valor = Math.abs(Number(p.valor) || 0);
             if (!totalsByCompany[company]) {
                 totalsByCompany[company] = { total: 0, centers: {} };
@@ -1076,7 +1093,7 @@ class DataProcessor {
             const totalsByCompany = {};
             items.forEach((p) => {
                 const company = this.getPaymentCompany(p);
-                const center = String(p.centro || 'Geral').trim() || 'Geral';
+                const center = String(p.centro || 'Sem centro').trim() || 'Sem centro';
                 const valor = Math.abs(Number(p.valor) || 0);
                 if (!totalsByCompany[company]) {
                     totalsByCompany[company] = { total: 0, centers: {} };
@@ -1289,7 +1306,7 @@ class DataProcessor {
             data: data || 'Pendente', // ALTERADO
             descricao: (descricao || '').trim(), // ALTERADO
             valor: Math.abs(Number(valor) || 0), // ALTERADO
-            centro: (centro || 'Geral').trim() || 'Geral', // ALTERADO
+            centro: (centro || '').trim(), // ALTERADO
             categoria: (categoria || '').trim(),
             assinatura: null, // começa Pendente por regra do sistema // ALTERADO
             timestamp: new Date().toISOString() // ALTERADO
@@ -1379,7 +1396,7 @@ class DataProcessor {
                     data: item.data || item.due_date || 'Pendente',
                     descricao: item.descricao || item.description || '',
                     valor: Math.abs(Number(item.valor || item.amount || 0)),
-                    centro: item.centro || item.cost_center || 'Geral',
+                    centro: String(item.centro || item.cost_center || '').trim(),
                     assinatura: null,
                     timestamp: new Date().toISOString()
                 }));
@@ -1434,7 +1451,7 @@ class DataProcessor {
                     data: item.due_date || item.data || 'Pendente',
                     descricao: item.description || item.descricao || '',
                     valor: Math.abs(Number(item.amount || item.valor || 0)),
-                    centro: item.cost_center || item.centro || 'Geral',
+                    centro: String(item.cost_center || item.centro || '').trim(),
                     assinatura: null,
                     timestamp: new Date().toISOString()
                 }));
@@ -1471,9 +1488,12 @@ class UIManager {
         this.userStatusMinInterval = 60000;
         this.companyFilter = 'DMF';
         this.selectedArchiveId = null;
-        this.flowSyncIntervalMs = 7000;
+        this.flowSyncIntervalMs = 3000;
         this.flowNextSyncAt = null;
         this.flowEventSource = null;
+        this.flowStreamReconnectTimer = null;
+        this.flowStreamReconnectMs = 2000;
+        this.dashboardSyncTimer = null;
         this.pendingCenterCompanyUpdates = new Map();
     }
 
@@ -1527,6 +1547,7 @@ class UIManager {
     showLogin() {
         document.getElementById('appSection').classList.add('hidden');
         document.getElementById('loginSection').classList.remove('hidden');
+        this.stopDashboardSummaryAutoRefresh();
     }
 
     initQuickActions() {
@@ -1699,13 +1720,14 @@ class UIManager {
         if (this.core.currentUser) this.core.currentUser.cargo = role;
         document.getElementById('userRoleBadge').innerText = (role || '—').toUpperCase();
 
+        this.companyFilter = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
         this.setCompanyFilter(this.companyFilter);
 
         if (this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             document.getElementById('adminMenu').classList.remove('hidden');
         }
 
-        this.core.data.loadFromBackend().then(() => {
+        this.loadInitialDashboardData().then(() => {
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();
@@ -1717,14 +1739,66 @@ class UIManager {
         });
         this.startBackendStatusMonitor();
         this.startSessionMonitor();
+        this.startDashboardSummaryAutoRefresh();
         this.renderAdminContent();
         this.applyRolePermissions();
         this.populateBudgetInputs();
         this.initQuickActions();
         this.initPaymentsFilters();
         this.initAuditFilters();
+        this.syncCurrentUserRole();
         this.applyInitialRouteFromUrl();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
+    }
+
+    getFirstAvailableCompanyButton() {
+        const buttons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
+        return buttons.find((btn) => !btn.classList.contains('hidden') && !btn.disabled) || buttons[0] || null;
+    }
+
+    async loadInitialDashboardData() {
+        const company = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+        this.core.data.setCurrentCompany(company);
+        this.setCompanyFilter(company);
+
+        const primaryOk = await this.core.data.loadFromBackend(true, company);
+        if (primaryOk) return true;
+
+        const fallbackButton = this.getFirstAvailableCompanyButton();
+        const fallbackCompany = fallbackButton?.getAttribute('data-company');
+        if (!fallbackCompany) return false;
+
+        const normalizedFallback = this.normalizeCompany(fallbackCompany);
+        if (normalizedFallback === company) return false;
+
+        this.core.data.setCurrentCompany(normalizedFallback);
+        this.setCompanyFilter(normalizedFallback);
+        return this.core.data.loadFromBackend(true, normalizedFallback);
+    }
+
+    startDashboardSummaryAutoRefresh() {
+        if (this.dashboardSyncTimer) return;
+
+        const refresh = () => {
+            const currentView = document.querySelector('.view:not(.hidden)')?.id;
+            if (currentView === 'payments') return;
+            this.core.data.loadFromBackend(true, this.core.data.currentCompany).then((ok) => {
+                if (!ok) return;
+                this.updateStats();
+                this.renderMonthlyReports();
+                this.updateFlowStatusBadges();
+            }).catch(() => {});
+        };
+
+        refresh();
+        this.dashboardSyncTimer = setInterval(refresh, 15000);
+    }
+
+    stopDashboardSummaryAutoRefresh() {
+        if (this.dashboardSyncTimer) {
+            clearInterval(this.dashboardSyncTimer);
+            this.dashboardSyncTimer = null;
+        }
     }
 
     applyInitialRouteFromUrl() {
@@ -1865,14 +1939,16 @@ class UIManager {
             const apiUser = data?.user;
             if (!apiUser || !this.core.currentUser) return;
             const newRole = normalizeRole(apiUser.role);
+            const perms = Array.isArray(apiUser.permissions) ? apiUser.permissions : [];
             if (newRole && newRole !== this.core.currentUser.cargo) {
                 this.core.currentUser.cargo = newRole;
-                localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(this.core.currentUser));
                 const badge = document.getElementById('userRoleBadge');
                 if (badge) badge.innerText = newRole.toUpperCase();
-                this.applyRolePermissions();
-                this.enforceViewAccess();
             }
+            this.core.currentUser.additionalPermissions = perms;
+            localStorage.setItem(this.core.storageKeys.SESSION, JSON.stringify(this.core.currentUser));
+            this.applyRolePermissions();
+            this.enforceViewAccess();
         } catch (_) {
             // ignore
         } finally {
@@ -1902,7 +1978,7 @@ class UIManager {
         if (this.flowAutoRefreshTimer) return;
         this.flowAutoRefreshBusy = true;
         this.flowNextSyncAt = Date.now() + this.flowSyncIntervalMs;
-        this.core.data.loadFromBackend().then(() => {
+        this.core.data.loadFromBackend(true, this.core.data.currentCompany).then(() => {
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();
@@ -1913,7 +1989,7 @@ class UIManager {
         this.flowAutoRefreshTimer = setInterval(() => {
             if (this.flowAutoRefreshBusy) return;
             this.flowAutoRefreshBusy = true;
-            this.core.data.loadFromBackend().then(() => {
+            this.core.data.loadFromBackend(true, this.core.data.currentCompany).then(() => {
                 this.renderPaymentsTable();
                 this.updateStats();
             }).finally(() => {
@@ -1928,16 +2004,34 @@ class UIManager {
             clearInterval(this.flowAutoRefreshTimer);
             this.flowAutoRefreshTimer = null;
         }
+        if (this.flowStreamReconnectTimer) {
+            clearTimeout(this.flowStreamReconnectTimer);
+            this.flowStreamReconnectTimer = null;
+        }
         this.flowNextSyncAt = null;
         this.stopFlowPushStream();
     }
 
+    scheduleFlowPushReconnect() {
+        if (this.flowStreamReconnectTimer) return;
+        this.flowStreamReconnectTimer = setTimeout(() => {
+            this.flowStreamReconnectTimer = null;
+            const currentView = document.querySelector('.view:not(.hidden)')?.id;
+            if (currentView !== 'payments') return;
+            this.startFlowPushStream();
+        }, this.flowStreamReconnectMs);
+    }
+
     startFlowPushStream() {
         if (this.flowEventSource) return;
+        if (this.flowStreamReconnectTimer) {
+            clearTimeout(this.flowStreamReconnectTimer);
+            this.flowStreamReconnectTimer = null;
+        }
         const token = localStorage.getItem('dmf_api_token');
         if (!token) return;
         const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
-        const url = `${getApiBase()}/api/flow-payments/stream?company=${encodeURIComponent(company)}&token=${encodeURIComponent(token)}`;
+        const url = `${getApiBase()}/api/flow-payments/stream?company=${encodeURIComponent(company)}&access_token=${encodeURIComponent(token)}`;
         try {
             this.flowEventSource = new EventSource(url);
         } catch (_) {
@@ -1961,6 +2055,7 @@ class UIManager {
         });
         this.flowEventSource.onerror = () => {
             this.stopFlowPushStream();
+            this.scheduleFlowPushReconnect();
         };
     }
 
@@ -2164,7 +2259,7 @@ class UIManager {
                     ${this.core.admin.roles.map(r => `
                         <tr>
                             <td>${r.name}</td>
-                            <td>${r.permissions.join(', ')}</td>
+                            <td>${this.formatPermissionsForDisplay(r.permissions)}</td>
                             <td>
                                 <button class="btn btn-ghost" data-role-action="edit" data-role-id="${r.id}">Editar</button>
                                 <button class="btn btn-danger" data-role-action="delete" data-role-id="${r.id}">Excluir</button>
@@ -2192,6 +2287,44 @@ class UIManager {
             });
             body.dataset.boundRoles = 'true';
         }
+    }
+
+    formatPermissionsForDisplay(permissions) {
+        const list = Array.isArray(permissions) ? permissions : [];
+        if (!list.length) return 'Sem permissões';
+        return list.map((permission) => this.formatPermissionLabel(permission)).join(', ');
+    }
+
+    formatPermissionLabel(permission) {
+        const raw = String(permission || '').trim();
+        if (!raw) return 'Permissão inválida';
+        const normalized = raw.toLowerCase().replace(/\s+/g, '_');
+        const aliases = {
+            audit_acess: 'audit_access',
+            audit_login_acess: 'audit_login_access'
+        };
+        const key = aliases[normalized] || normalized;
+        const labels = {
+            all: 'Todas as permissões',
+            sign_payments: 'Assinar pagamentos',
+            import_payments: 'Importar pagamentos',
+            export_payments: 'Exportar pagamentos',
+            add_payments: 'Adicionar pagamentos',
+            delete_payments: 'Excluir pagamentos',
+            view_archives: 'Ver fluxos anteriores',
+            archive_flow: 'Arquivar fluxo',
+            delete_archive: 'Excluir fluxos anteriores',
+            export_archives: 'Exportar fluxos anteriores',
+            compare_archives: 'Comparar fluxos anteriores',
+            admin_access: 'Acessar administração',
+            audit_access: 'Acessar auditoria',
+            audit_login_access: 'Ver logs de acesso',
+            roles_manage: 'Gerenciar cargos',
+            user_manage: 'Gerenciar usuários',
+            backup_restore: 'Backup e restauração',
+            revoke_sessions: 'Revogar sessões'
+        };
+        return labels[key] || raw;
     }
 
     renderCenterPermissions() {
@@ -2848,10 +2981,40 @@ class UIManager {
     openCenterAssignmentModal(centerName) {
         const modal = document.getElementById('centerAssignModal');
         if (!modal) return;
+        if (modal.classList.contains('is-open')) return;
         const labelEl = document.getElementById('centerAssignName');
         if (labelEl) labelEl.textContent = centerName;
+        const companySelect = document.getElementById('centerAssignCompany');
+        if (companySelect) {
+            const current = this.core.data.getCenterCompanyOverride(centerName) || this.core.data.getCompanyForCenter(centerName) || 'Outros';
+            companySelect.value = current;
+        }
         modal.dataset.centerName = centerName;
         modal.classList.add('is-open');
+    }
+
+    saveCenterAssignmentFromModal() {
+        const modal = document.getElementById('centerAssignModal');
+        const center = modal?.dataset?.centerName ? String(modal.dataset.centerName).trim() : '';
+        const company = String(document.getElementById('centerAssignCompany')?.value || '').trim();
+        if (!center || !company) {
+            showToast('Selecione a empresa para este centro de custo.', 'warn');
+            return;
+        }
+        this.core.data.setCenterCompany(center, company);
+        this.closeModal('centerAssignModal');
+        this.renderCenterCompanyEditor();
+        this.renderPaymentsTable();
+        this.updateStats();
+        showToast(`Centro "${center}" salvo para ${company}.`, 'success');
+        this.core.audit?.log?.('CENTRO VINCULADO', `Centro ${center} vinculado a ${company}.`, 'centro_de_custo');
+
+        const nextKey = Array.from(this.core.data.pendingCenterAssignments || [])[0];
+        if (!nextKey) return;
+        const nextCenter = (this.core.data.costCenters || []).find(c => this.core.data._key(c) === nextKey);
+        if (nextCenter) {
+            this.openCenterAssignmentModal(nextCenter);
+        }
     }
 
     populateCostCentersDatalist(){ // ALTERADO
@@ -2984,7 +3147,7 @@ class UIManager {
             ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
             : (canSign && canSignCenter ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
             const qrHtml = (canSeeQr && p.assinatura?.hash)
-                ? `<div class="qr-box" data-qr="${publicBase}${p.assinatura.hash}"></div>`
+                ? `<a class="btn btn-ghost btn-verify" href="${publicBase}${p.assinatura.hash}" target="_blank" rel="noopener">Verificar</a>`
                 : '';
 
             const rowClass = p.assinatura ? 'payment-row-signed' : '';
@@ -3032,31 +3195,7 @@ class UIManager {
     }
 
     renderSignatureQrCodes() {
-        const qr = window.QRCode;
-        document.querySelectorAll('.qr-box').forEach(box => {
-            if (box.dataset.rendered) return;
-            const text = box.getAttribute('data-qr');
-            if (!text) return;
-            if (!qr) {
-                box.innerHTML = `<a href="${text}" target="_blank" rel="noopener">Verificar</a>`;
-                box.dataset.rendered = 'true';
-                return;
-            }
-            qr.toDataURL(text, { width: 96, margin: 1 }, (err, url) => {
-                if (err) {
-                    box.innerHTML = `<a href="${text}" target="_blank" rel="noopener">Verificar</a>`;
-                    box.dataset.rendered = 'true';
-                    return;
-                }
-                const img = document.createElement('img');
-                img.src = url;
-                img.width = 96;
-                img.height = 96;
-                img.alt = 'QR de validação';
-                box.appendChild(img);
-                box.dataset.rendered = 'true';
-            });
-        });
+        // Mantido por compatibilidade: a tabela usa apenas o botao "Verificar".
     }
 
     updateStats() {
@@ -3130,7 +3269,7 @@ class UIManager {
       const data = fd.get('data');
       const descricao = (fd.get('descricao') || '').trim();
       const valor = this.parseValorInput ? this.parseValorInput(fd.get('valor')) : Number(String(fd.get('valor')||'').replace(/\./g,'').replace(',','.')) || 0;
-      let centro = (fd.get('centro') || 'Geral').trim() || 'Geral';
+      let centro = (fd.get('centro') || '').trim();
       const categoria = (fd.get('categoria') || '').trim();
 
       if (!fornecedor || !data || !valor) {
@@ -4468,11 +4607,19 @@ function initDomBindings() {
             if (center && company) {
                 system?.data?.setCenterCompany?.(center, company);
                 system?.ui?.closeModal?.('centerAssignModal');
+                showToast(`Centro "${center}" salvo para ${company}.`, 'success');
                 system?.ui?.renderPaymentsTable?.();
                 system?.ui?.updateStats?.();
             }
         });
     });
+
+    const saveCenterAssignmentButton = document.getElementById('btnSaveCenterAssignment');
+    if (saveCenterAssignmentButton) {
+        saveCenterAssignmentButton.addEventListener('click', function () {
+            system?.ui?.saveCenterAssignmentFromModal?.();
+        });
+    }
 
     const centerCompanySearch = document.getElementById('centerCompanySearch');
     if (centerCompanySearch) {

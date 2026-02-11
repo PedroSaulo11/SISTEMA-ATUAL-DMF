@@ -315,6 +315,18 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     transform: translateY(-1px);
 }
 
+.btn-success {
+    background: linear-gradient(135deg, #12b76a 0%, #0a9956 100%);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(18, 183, 106, 0.35);
+}
+
+.btn-success:hover {
+    background: linear-gradient(135deg, #0a9956 0%, #087a46 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(18, 183, 106, 0.45);
+}
+
 /* --- Tabelas de Alta Performance --- */
 .data-table-wrapper { overflow-x: auto; border-radius: 8px; border: 1px solid #e2e8f0; }
 .data-table-spaced { margin-top: 20px; }
@@ -1216,6 +1228,16 @@ tr:hover { background: #f8fbff; }
     background: #fff;
 }
 
+.btn-verify {
+    margin-top: 8px;
+    display: inline-flex;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 10px;
+    text-decoration: none;
+}
+
 .btn-danger {
     background: #dc3545;
     color: white;
@@ -1364,6 +1386,10 @@ tr:hover { background: #f8fbff; }
     gap: 12px;
     flex-wrap: wrap;
     margin: 14px 0 6px;
+}
+
+#centerAssignCompany {
+    min-width: 240px;
 }
 
 .modal-actions {

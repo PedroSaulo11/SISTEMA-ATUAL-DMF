@@ -1,4 +1,4 @@
-const { Sequelize, DataTypes, Op } = require('sequelize');
+const { Sequelize, DataTypes, Op, literal } = require('sequelize');
 
 const connectionString = process.env.DATABASE_URL;
 const useSSL = process.env.PG_SSL === 'true';
@@ -554,12 +554,43 @@ async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
       where = { id, assinatura: { [Op.is]: null }, company };
     }
   }
-  const [count] = await Flow.update({ assinatura, updated_at: new Date() }, { where });
+  const [count] = await Flow.update({
+    assinatura,
+    version: literal('"version" + 1'),
+    updated_at: new Date()
+  }, { where });
   if (!count) {
     return null;
   }
   const row = await Flow.findOne({ where: { id, ...(company ? (company === 'DMF' ? { [Op.or]: [{ company }, { company: null }] } : { company }) : {}) } });
   return row ? row.toJSON() : null;
+}
+
+async function validateDbSchema() {
+  if (!dbReady) {
+    return { ok: false, reason: 'db_not_ready', missing: [] };
+  }
+  const qi = getSequelize().getQueryInterface();
+  const checks = [
+    { table: 'flow_payments', columns: ['id', 'company', 'assinatura', 'version', 'updated_at'] },
+    { table: 'app_roles', columns: ['name', 'permissions'] },
+    { table: 'app_center_companies', columns: ['center_key', 'center_label', 'company'] },
+    { table: 'app_user_companies', columns: ['user_id', 'company'] }
+  ];
+  const missing = [];
+  for (const item of checks) {
+    try {
+      const desc = await qi.describeTable(item.table);
+      for (const col of item.columns) {
+        if (!Object.prototype.hasOwnProperty.call(desc, col)) {
+          missing.push(`${item.table}.${col}`);
+        }
+      }
+    } catch (_) {
+      missing.push(item.table);
+    }
+  }
+  return { ok: missing.length === 0, missing };
 }
 
 async function listFlowArchives(company = null) {
@@ -716,4 +747,5 @@ module.exports = {
   getUserSession,
   setUserSessionRevokedAfter,
   insertWebhook,
+  validateDbSchema,
 };

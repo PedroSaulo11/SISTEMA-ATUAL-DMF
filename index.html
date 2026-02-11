@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <title>DMF Enterprise - Fluxo Financeiro v2.0</title>
-    <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="assistant.css">
+    <link rel="stylesheet" href="style.css?v=20260211-f1">
+    <link rel="stylesheet" href="assistant.css?v=20260211-f1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -286,7 +286,7 @@
       </div>
       <div class="form-group">
         <label for="addCentro">Centro de Custo:</label>
-        <input type="text" id="addCentro" name="centro" placeholder="Geral" required list="centrosDataList"> <!-- ALTERADO -->
+        <input type="text" id="addCentro" name="centro" placeholder="Informe o centro de custo" required list="centrosDataList"> <!-- ALTERADO -->
         <datalist id="centrosDataList"></datalist> <!-- ALTERADO -->
       </div>
       <div class="form-group">
@@ -308,55 +308,22 @@
     <h3>Novo Centro de Custo Identificado</h3>
     <p>Encontramos um novo Centro de Custo:</p>
     <div class="center-assign-highlight" id="centerAssignName">—</div>
-    <p>Selecione em qual empresa este centro deve ser encaixado:</p>
+    <p>Selecione em qual empresa este centro deve ser encaixado e salve abaixo:</p>
     <div class="center-assign-actions">
-      <button type="button" class="btn btn-primary" data-center-company="DMF">DMF</button>
-      <button type="button" class="btn btn-ghost" data-center-company="JFX">JFX</button>
-      <button type="button" class="btn btn-ghost" data-center-company="Real Energy">Real Energy</button>
+      <select id="centerAssignCompany" class="styled-input">
+        <option value="DMF">DMF</option>
+        <option value="JFX">JFX</option>
+        <option value="Real Energy">Real Energy</option>
+        <option value="Outros">Outros</option>
+      </select>
     </div>
     <div class="modal-actions">
+      <button type="button" id="btnSaveCenterAssignment" class="btn btn-success">Salvar Centro</button>
       <button type="button" class="btn btn-danger" data-close-modal="centerAssignModal">Fechar</button>
     </div>
   </div>
 </div>
 
-<script>
-(async function loadAppWithFragments() {
-    try {
-        const sections = document.querySelectorAll('section[data-fragment]');
-
-        for (const section of sections) {
-            const file = section.getAttribute('data-fragment');
-            if (!file) continue;
-            const response = await fetch(`/${file}`, { cache: 'no-store' });
-            if (!response.ok) {
-                throw new Error(`Falha ao carregar fragmento ${file}: HTTP ${response.status}`);
-            }
-            const html = await response.text();
-            const parsed = new DOMParser().parseFromString(html, 'text/html');
-            const bodyHtml = parsed?.body?.innerHTML;
-            section.innerHTML = bodyHtml && bodyHtml.trim() ? bodyHtml : html;
-        }
-
-        await new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = 'script.js';
-            script.onload = resolve;
-            script.onerror = () => reject(new Error('Falha ao carregar script.js'));
-            document.body.appendChild(script);
-        });
-
-        const assistant = document.createElement('script');
-        assistant.src = 'assistant.js';
-        document.body.appendChild(assistant);
-    } catch (error) {
-        console.error('Erro ao carregar a interface:', error);
-        const app = document.getElementById('appSection');
-        if (app) {
-            app.insertAdjacentHTML('afterbegin', '<div class=\"card\" style=\"margin:16px;\">Falha ao carregar a interface. Recarregue a página.</div>');
-        }
-    }
-})();
-</script>
+<script src="bootstrap.js?v=20260211-f1"></script>
 </body>
 </html>

@@ -53,7 +53,8 @@ const {
   replaceRoles,
   getUserSession,
   setUserSessionRevokedAfter,
-  insertWebhook
+  insertWebhook,
+  validateDbSchema
 } = require('./db');
 
 const app = express();
@@ -130,6 +131,7 @@ const ALLOW_ALL_COMPANIES_WHEN_UNSET = process.env.ALLOW_ALL_COMPANIES_WHEN_UNSE
 const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
 let lastTokenLoadAt = 0;
 const CRON_SECRET = process.env.CRON_SECRET || '';
+const DB_SCHEMA_STRICT = process.env.DB_SCHEMA_STRICT === 'true';
 
 async function loadRolePermissions(role) {
   const normalized = normalizeRole(role);
@@ -181,7 +183,14 @@ async function enforceCompanyAccess(req, res, next) {
     });
     return res.status(403).json({ error: 'Company access not configured' });
   }
-  const requested = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+  const requestedRaw = req.query.company || req.body?.company;
+  if (!requestedRaw) {
+    return next();
+  }
+  const requested = normalizeCompany(requestedRaw);
+  if (!requested) {
+    return next();
+  }
   if (!companies.includes(requested)) {
     await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', `Acesso negado para ${requested}.`, {
       company: requested
@@ -205,6 +214,27 @@ async function recordAuditEvent(req, action, details, metadata = null) {
   } catch (error) {
     logger.warn('Failed to record audit event', { action, error: error.message });
   }
+}
+
+function respondConflict(req, res, { code, message, payload = null, metadata = null }) {
+  const safeCode = String(code || 'CONFLICT');
+  const safeMessage = String(message || 'Conflict');
+  logger.warn('ALERT_CONFLICT', {
+    request_id: req.requestId || null,
+    code: safeCode,
+    message: safeMessage,
+    path: req.path,
+    method: req.method,
+    user: req.user?.username || null,
+    metadata: metadata || null
+  });
+  recordAuditEvent(req, safeCode, safeMessage, metadata || null).catch(() => {});
+  return res.status(409).json({
+    error: 'Conflict',
+    code: safeCode,
+    message: safeMessage,
+    ...(payload && typeof payload === 'object' ? payload : {})
+  });
 }
 
 const contaAzulClient = axios.create({ timeout: CONTA_AZUL_TIMEOUT_MS });
@@ -316,6 +346,15 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
 }));
 
+// Correlation id for tracing requests across logs and clients.
+app.use((req, res, next) => {
+  const headerId = req.get('X-Request-Id');
+  const requestId = headerId && String(headerId).trim() ? String(headerId).trim() : crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
+
 // Monitoring: request timing and 5xx alerts
 app.use((req, res, next) => {
   const start = process.hrtime.bigint();
@@ -323,6 +362,7 @@ app.use((req, res, next) => {
     const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
     if (res.statusCode >= 500) {
       logger.error('ALERT_HTTP_5XX', {
+        request_id: req.requestId || null,
         method: req.method,
         path: req.originalUrl,
         status: res.statusCode,
@@ -330,6 +370,7 @@ app.use((req, res, next) => {
       });
     } else if (elapsedMs >= SLOW_REQUEST_THRESHOLD_MS) {
       logger.warn('ALERT_SLOW_REQUEST', {
+        request_id: req.requestId || null,
         method: req.method,
         path: req.originalUrl,
         status: res.statusCode,
@@ -363,6 +404,7 @@ const PUBLIC_FILES = new Set([
   'assistente.fragment.html',
   'cobli.fragment.html',
   'style.css',
+  'bootstrap.js',
   'script.js',
   'assistant.js',
   'assistant.css',
@@ -1083,10 +1125,15 @@ app.post('/api/auth/login', [
 
     logger.info('User logged in successfully', { username, role: user.role });
 
+    const permissions = await loadRolePermissions(user.role);
+
     res.json({
       message: 'Login successful',
       token,
-      user: sanitizeUserForResponse(user)
+      user: {
+        ...sanitizeUserForResponse(user),
+        permissions
+      }
     });
   } catch (error) {
     logger.error('Login error', { error: error.message });
@@ -1334,15 +1381,41 @@ app.post(
       const expected = Number(item.version);
       const existing = await getFlowPaymentById(payment.id, company);
       if (existing && Number(existing.version || 0) !== expected) {
-        return res.status(409).json({
-          error: 'Version conflict',
-          current: existing
+        return respondConflict(req, res, {
+          code: 'FLOW_VERSION_CONFLICT',
+          message: `Conflito de versão para o pagamento ${payment.id}.`,
+          payload: {
+            current: existing,
+            expectedVersion: expected,
+            currentVersion: Number(existing.version || 0)
+          },
+          metadata: {
+            company,
+            paymentId: payment.id,
+            expectedVersion: expected,
+            currentVersion: Number(existing.version || 0)
+          }
         });
       }
       if (existing) {
         saved = await updateFlowPaymentWithVersion(payment.id, payment, expected, company);
         if (!saved) {
-          return res.status(409).json({ error: 'Version conflict' });
+          const current = await getFlowPaymentById(payment.id, company);
+          return respondConflict(req, res, {
+            code: 'FLOW_VERSION_CONFLICT',
+            message: `Conflito de versão para o pagamento ${payment.id}.`,
+            payload: {
+              current: current || null,
+              expectedVersion: expected,
+              currentVersion: Number(current?.version || 0)
+            },
+            metadata: {
+              company,
+              paymentId: payment.id,
+              expectedVersion: expected,
+              currentVersion: Number(current?.version || 0)
+            }
+          });
         }
       }
     }
@@ -1382,11 +1455,16 @@ app.patch(
     const updated = await signFlowPaymentIfUnsigned(paymentId, assinatura, company);
     if (!updated) {
       const existing = await getFlowPaymentById(paymentId, company);
-      await recordAuditEvent(req, 'FLOW_SIGN_CONFLICT', `Tentativa de assinar pagamento já assinado (${paymentId}).`, {
-        company,
-        paymentId
+      return respondConflict(req, res, {
+        code: 'FLOW_SIGN_CONFLICT',
+        message: `Tentativa de assinar pagamento ja assinado (${paymentId}).`,
+        payload: { payment: existing || null },
+        metadata: {
+          company,
+          paymentId,
+          alreadySigned: !!existing?.assinatura
+        }
       });
-      return res.status(409).json({ error: 'Pagamento já assinado', payment: existing || null });
     }
     const payments = await listFlowPayments(company);
     const withChain = applyChainHashes(payments);
@@ -1876,10 +1954,14 @@ app.get('/api/auth/service-status', (req, res) => {
 });
 
 // Route to check user authentication status (JWT)
-app.get('/api/auth/user-status', authenticateToken, (req, res) => {
+app.get('/api/auth/user-status', authenticateToken, async (req, res) => {
+  const permissions = await loadRolePermissions(req.user?.role);
   res.json({
     authenticated: true,
-    user: sanitizeUserForResponse(req.user)
+    user: {
+      ...sanitizeUserForResponse(req.user),
+      permissions
+    }
   });
 });
 
@@ -2464,6 +2546,15 @@ async function startServer() {
     }
     await initDb();
     logger.info('Database connected');
+    const schema = await validateDbSchema();
+    if (!schema.ok) {
+      logger.error('ALERT_DB_SCHEMA_INVALID', { missing: schema.missing });
+      if (DB_SCHEMA_STRICT) {
+        throw new Error(`Database schema validation failed: ${schema.missing.join(', ')}`);
+      }
+    } else {
+      logger.info('Database schema validated');
+    }
   } catch (error) {
     logger.warn('Database unavailable, using in-memory fallback', { error: error.message });
   }
