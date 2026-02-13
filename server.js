@@ -7,6 +7,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const winston = require('winston');
 const rateLimit = require('express-rate-limit');
@@ -252,6 +253,27 @@ const contaAzulClient = axios.create({ timeout: CONTA_AZUL_TIMEOUT_MS });
 const cobliClient = axios.create({ timeout: COBLI_TIMEOUT_MS });
 
 // Security: Configure Winston logger
+function isGcpRuntime() {
+  // Covers App Engine / Cloud Run style env vars.
+  return !!(process.env.GAE_ENV || process.env.K_SERVICE || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT);
+}
+
+const enableConsoleLogs = process.env.LOG_TO_CONSOLE === 'true' || process.env.NODE_ENV !== 'production' || isGcpRuntime();
+const loggerTransports = [];
+
+if (enableConsoleLogs) {
+  loggerTransports.push(new winston.transports.Console({
+    format: winston.format.simple(),
+  }));
+} else {
+  // File transport is unsafe on App Engine because the filesystem is not guaranteed writable.
+  // Keep it for local/server deployments where the working directory is writable.
+  const logDir = path.join(__dirname, 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  loggerTransports.push(new winston.transports.File({ filename: path.join(logDir, 'error.log'), level: 'error' }));
+  loggerTransports.push(new winston.transports.File({ filename: path.join(logDir, 'combined.log') }));
+}
+
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
@@ -260,17 +282,8 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   defaultMeta: { service: 'dmf-system' },
-  transports: [
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
-  ],
+  transports: loggerTransports,
 });
-
-if (process.env.NODE_ENV !== 'production' || process.env.LOG_TO_CONSOLE === 'true') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.simple(),
-  }));
-}
 
 // Optional resource monitoring
 if (process.env.MONITOR_ENABLED === 'true') {
@@ -423,6 +436,41 @@ const PUBLIC_FILES = new Set([
   'verify.js',
   'verify.css'
 ]);
+
+// Boot gating:
+// Keep the process alive (so App Engine doesn't show a generic 503) and return explicit 503s for API/tasks
+// until required secrets/config are loaded. Static UI can still load to surface diagnostics via /api/health.
+const bootState = {
+  ready: false,
+  startedAt: new Date().toISOString(),
+  fatalError: null,
+};
+
+function shouldExposeStartupError() {
+  return process.env.EXPOSE_STARTUP_ERRORS === 'true' || process.env.NODE_ENV !== 'production';
+}
+
+app.use((req, res, next) => {
+  if (bootState.ready) return next();
+
+  // Allow health and static UI while booting.
+  if (req.path === '/api/health') return next();
+  if (req.path === '/' || req.path === '/verify') return next();
+  if (req.path.startsWith('/assets/')) return next();
+  const candidate = req.path.startsWith('/') ? req.path.slice(1) : req.path;
+  if (PUBLIC_FILES.has(candidate)) return next();
+
+  // Gate API + cron/tasks until boot is ready.
+  if (req.path.startsWith('/api') || req.path.startsWith('/tasks')) {
+    const payload = { error: 'Service initializing' };
+    if (bootState.fatalError && shouldExposeStartupError()) {
+      payload.details = bootState.fatalError;
+    }
+    return res.status(503).json(payload);
+  }
+
+  return next();
+});
 
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
@@ -2115,6 +2163,11 @@ app.get('/api/health', async (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
+    boot: {
+      ready: bootState.ready,
+      started_at: bootState.startedAt,
+      fatal_error: bootState.fatalError && shouldExposeStartupError() ? bootState.fatalError : null
+    },
     db_ready: dbReady,
     db: describeDatabaseUrl(process.env.DATABASE_URL),
     permissions_enforced: PERMISSIONS_ENFORCED,
@@ -2683,32 +2736,48 @@ async function initializeDatabaseAndRuntime() {
 }
 
 // Start server
-async function startServer() {
-  await loadSecretsFromSecretManager();
-  applyRuntimeConfigFromEnv();
+let httpServerStarted = false;
 
-  if (process.env.NODE_ENV === 'production') {
-    if (!JWT_SECRET) {
-      throw new Error('JWT_SECRET is required in production');
-    }
-    if (!SIGNATURE_SECRET) {
-      throw new Error('SIGNATURE_SECRET is required in production');
-    }
-    if (!process.env.DATABASE_URL) {
-      throw new Error('DATABASE_URL is required in production');
-    }
-  }
-
+function startHttpServer() {
+  if (httpServerStarted) return;
+  httpServerStarted = true;
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log('Conta Azul API integration ready');
-    initializeDatabaseAndRuntime().catch(error => {
-      logger.error('Unexpected DB init loop failure', { error: error.message });
-    });
   });
 }
 
+async function startServer() {
+  startHttpServer();
+  try {
+    await loadSecretsFromSecretManager();
+    applyRuntimeConfigFromEnv();
+
+    if (process.env.NODE_ENV === 'production') {
+      if (!JWT_SECRET) {
+        throw new Error('JWT_SECRET is required in production');
+      }
+      if (!SIGNATURE_SECRET) {
+        throw new Error('SIGNATURE_SECRET is required in production');
+      }
+      if (!process.env.DATABASE_URL) {
+        throw new Error('DATABASE_URL is required in production');
+      }
+    }
+
+    bootState.ready = true;
+    initializeDatabaseAndRuntime().catch(error => {
+      logger.error('Unexpected DB init loop failure', { error: error.message });
+    });
+  } catch (error) {
+    bootState.ready = false;
+    bootState.fatalError = error && error.message ? error.message : String(error);
+    logger.error('Startup failed (server will keep running for diagnostics)', { error: bootState.fatalError });
+  }
+}
+
 startServer().catch(error => {
-  logger.error('Failed to start server', { error: error.message });
-  process.exit(1);
+  bootState.ready = false;
+  bootState.fatalError = error && error.message ? error.message : String(error);
+  logger.error('Unexpected startup failure', { error: bootState.fatalError });
 });
