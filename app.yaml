@@ -1,6 +1,11 @@
 runtime: nodejs20
 env: standard
 
+automatic_scaling:
+  # Multiuser: keep a single instance to avoid SSE "split brain" until a shared pub/sub is added.
+  # Also avoids the default max_instances=20 behavior.
+  max_instances: 1
+
 beta_settings:
   cloud_sql_instances: project-b2fcff48-a0ca-4867-995:southamerica-east1:meu-banco-postgres
 
