@@ -1091,13 +1091,27 @@ app.post('/api/auth/register', [
   try {
     // In production, avoid leaving public self-registration enabled.
     // To bootstrap the very first admin, allow registration only when DB is ready and empty.
+    // After bootstrap, allow admin-created users even when public registration is disabled.
     if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_REGISTER !== 'true') {
       if (!isDbReady()) {
         return res.status(503).json({ error: 'Database not ready' });
       }
       const existing = await listUsers();
       if (existing.length > 0) {
-        return res.status(403).json({ error: 'Registration disabled' });
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+        if (!token) {
+          return res.status(403).json({ error: 'Registration disabled' });
+        }
+        try {
+          const authUser = jwt.verify(token, JWT_SECRET);
+          const authRole = String(authUser?.role || '').trim().toLowerCase();
+          if (authRole !== 'admin') {
+            return res.status(403).json({ error: 'Registration disabled' });
+          }
+        } catch (_) {
+          return res.status(403).json({ error: 'Registration disabled' });
+        }
       }
     }
 
