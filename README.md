@@ -80,5 +80,22 @@ gcloud app deploy
 ## 6) Observações de segurança
 
 - **Não versionar** o arquivo `.env` com segredos.
-- Use `app.yaml` para variáveis de produção no App Engine.
+- No App Engine deste projeto, use `app.yaml` apenas para variáveis não sensíveis e mapeamento de nomes de segredos.
+- Os segredos reais devem vir do Secret Manager no startup do backend (`SECRET_MANAGER_ENABLED=true`).
 
+## 7) Check de prontidão multiusuário
+
+Rodar validações locais:
+```bash
+npm run check:phase3
+```
+
+Check de readiness (incluído no `check:phase3`):
+```bash
+npm run check:readiness
+```
+
+Para validar também existência dos segredos no GCP:
+```bash
+VERIFY_GCLOUD_SECRETS=true npm run check:readiness
+```

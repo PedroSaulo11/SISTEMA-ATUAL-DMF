@@ -1,13 +1,12 @@
 const { Sequelize, DataTypes, Op, literal } = require('sequelize');
 
-const connectionString = process.env.DATABASE_URL;
-const useSSL = process.env.PG_SSL === 'true';
-
 let sequelize = null;
 let dbReady = false;
 
 function getSequelize() {
   if (!sequelize) {
+    const connectionString = process.env.DATABASE_URL;
+    const useSSL = process.env.PG_SSL === 'true';
     if (!connectionString) {
       throw new Error('DATABASE_URL is required to initialize the database.');
     }
@@ -471,32 +470,83 @@ async function listFlowPayments(company = null) {
 
 async function replaceFlowPayments(payments, company = null) {
   const Flow = FlowPaymentModel();
-  if (company) {
-    if (company === 'DMF') {
-      await Flow.destroy({ where: { [Op.or]: [{ company }, { company: null }] } });
+  const db = getSequelize();
+  await db.transaction(async (transaction) => {
+    let scopeWhere = {};
+    if (company) {
+      if (company === 'DMF') {
+        scopeWhere = { [Op.or]: [{ company }, { company: null }] };
+      } else {
+        scopeWhere = { company };
+      }
+    }
+
+    const existingRows = await Flow.findAll({
+      where: scopeWhere,
+      transaction
+    });
+    const existingById = new Map(existingRows.map((row) => [String(row.id), row.toJSON()]));
+
+    const merged = (payments || []).map((payment) => {
+      const id = String(payment.id || '');
+      const existing = existingById.get(id);
+      if (!existing) {
+        return {
+          ...payment,
+          version: Number.isFinite(payment.version) ? Number(payment.version) : 0
+        };
+      }
+
+      // Preserve assinatura/version when import payload is stale and avoid regressing ordering timestamps.
+      const next = { ...payment };
+      if (!next.assinatura && existing.assinatura) {
+        next.assinatura = existing.assinatura;
+      }
+      const incomingVersion = Number.isFinite(next.version) ? Number(next.version) : 0;
+      const existingVersion = Number(existing.version || 0);
+      next.version = Math.max(incomingVersion, existingVersion);
+      next.created_at = existing.created_at || next.created_at || new Date();
+      next.updated_at = new Date();
+      return next;
+    });
+
+    if (company) {
+      await Flow.destroy({ where: scopeWhere, transaction });
     } else {
-      await Flow.destroy({ where: { company } });
+      await Flow.destroy({ where: {}, truncate: true, transaction });
     }
-  } else {
-    await Flow.destroy({ where: {}, truncate: true });
-  }
-  if (payments && payments.length) {
-    for (const payment of payments) {
-      await Flow.upsert(payment);
+
+    if (merged.length) {
+      await Flow.bulkCreate(merged, { transaction });
     }
-  }
+  });
 }
 
 async function upsertFlowPayment(payment) {
   const Flow = FlowPaymentModel();
+  // Preserve created_at for stable ordering across devices/imports.
+  let createdAt = payment?.created_at || null;
+  try {
+    if (payment?.id) {
+      const existing = await Flow.findByPk(String(payment.id));
+      if (existing?.created_at) {
+        createdAt = existing.created_at;
+      }
+    }
+  } catch (_) {
+    // ignore lookup errors; upsert below will surface real issues.
+  }
   await Flow.upsert({
     ...payment,
+    created_at: createdAt || new Date(),
     updated_at: new Date()
   });
 }
 
 async function updateFlowPaymentWithVersion(id, updates, expectedVersion, company = null) {
   const Flow = FlowPaymentModel();
+  const safeUpdates = { ...(updates || {}) };
+  delete safeUpdates.created_at; // never mutate created_at (ordering key)
   let where = { id, version: expectedVersion };
   if (company) {
     if (company === 'DMF') {
@@ -506,7 +556,7 @@ async function updateFlowPaymentWithVersion(id, updates, expectedVersion, compan
     }
   }
   const [count] = await Flow.update({
-    ...updates,
+    ...safeUpdates,
     version: expectedVersion + 1,
     updated_at: new Date()
   }, { where });

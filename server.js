@@ -1,4 +1,8 @@
-require('dotenv').config();
+// In production (App Engine), config comes from env vars / Secret Manager.
+// Loading `.env` in production can accidentally override secrets (e.g. DATABASE_URL).
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -132,6 +136,10 @@ const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
 let lastTokenLoadAt = 0;
 const CRON_SECRET = process.env.CRON_SECRET || '';
 const DB_SCHEMA_STRICT = process.env.DB_SCHEMA_STRICT === 'true';
+const runtimeStats = {
+  conflictsTotal: 0,
+  lastConflictAt: null
+};
 
 async function loadRolePermissions(role) {
   const normalized = normalizeRole(role);
@@ -201,6 +209,7 @@ async function enforceCompanyAccess(req, res, next) {
 }
 
 async function recordAuditEvent(req, action, details, metadata = null) {
+  if (!isDbReady()) return;
   try {
     await insertAuditEvent({
       action,
@@ -219,6 +228,8 @@ async function recordAuditEvent(req, action, details, metadata = null) {
 function respondConflict(req, res, { code, message, payload = null, metadata = null }) {
   const safeCode = String(code || 'CONFLICT');
   const safeMessage = String(message || 'Conflict');
+  runtimeStats.conflictsTotal += 1;
+  runtimeStats.lastConflictAt = new Date().toISOString();
   logger.warn('ALERT_CONFLICT', {
     request_id: req.requestId || null,
     code: safeCode,
@@ -436,25 +447,120 @@ let accessToken = null;
 let refreshToken = null;
 let tokenExpiry = null; // Will be set based on JWT expiry
 const users = []; // In-memory fallback for transition
-const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-jwt-secret');
+let JWT_SECRET = null;
 
 // OAuth2 Configuration
-const CLIENT_ID = process.env.CONTA_AZUL_CLIENT_ID;
-const CLIENT_SECRET = process.env.CONTA_AZUL_CLIENT_SECRET;
-const TOKEN_URL = process.env.CONTA_AZUL_TOKEN_URL;
-const CONTA_AZUL_API_BASE_URL = process.env.CONTA_AZUL_API_BASE_URL || 'https://api.contaazul.com';
-const CONTA_AZUL_PAYMENTS_PATH = process.env.CONTA_AZUL_PAYMENTS_PATH || '/v2/payments';
-const SIGNATURE_SECRET = process.env.SIGNATURE_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-signature-secret');
+let CLIENT_ID = null;
+let CLIENT_SECRET = null;
+let TOKEN_URL = null;
+let CONTA_AZUL_API_BASE_URL = null;
+let CONTA_AZUL_PAYMENTS_PATH = null;
+let SIGNATURE_SECRET = null;
 
 // Cobli Configuration
-const COBLI_API_BASE_URL = process.env.COBLI_API_BASE_URL;
-const COBLI_API_TOKEN = process.env.COBLI_API_TOKEN;
-const COBLI_AUTH_HEADER = process.env.COBLI_AUTH_HEADER || 'Authorization';
-const COBLI_AUTH_SCHEME = process.env.COBLI_AUTH_SCHEME || 'Bearer';
-const COBLI_WEBHOOK_SECRET = process.env.COBLI_WEBHOOK_SECRET;
-const COBLI_WEBHOOK_SIGNATURE_HEADER = process.env.COBLI_WEBHOOK_SIGNATURE_HEADER;
-const EVENT_WEBHOOK_URL = process.env.EVENT_WEBHOOK_URL || '';
-const EVENT_WEBHOOK_SECRET = process.env.EVENT_WEBHOOK_SECRET || '';
+let COBLI_API_BASE_URL = null;
+let COBLI_API_TOKEN = null;
+let COBLI_AUTH_HEADER = null;
+let COBLI_AUTH_SCHEME = null;
+let COBLI_WEBHOOK_SECRET = null;
+let COBLI_WEBHOOK_SIGNATURE_HEADER = null;
+let EVENT_WEBHOOK_URL = '';
+let EVENT_WEBHOOK_SECRET = '';
+
+function applyRuntimeConfigFromEnv() {
+  JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-jwt-secret');
+  CLIENT_ID = process.env.CONTA_AZUL_CLIENT_ID || null;
+  CLIENT_SECRET = process.env.CONTA_AZUL_CLIENT_SECRET || null;
+  TOKEN_URL = process.env.CONTA_AZUL_TOKEN_URL || null;
+  CONTA_AZUL_API_BASE_URL = process.env.CONTA_AZUL_API_BASE_URL || 'https://api.contaazul.com';
+  CONTA_AZUL_PAYMENTS_PATH = process.env.CONTA_AZUL_PAYMENTS_PATH || '/v2/payments';
+  SIGNATURE_SECRET = process.env.SIGNATURE_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-insecure-signature-secret');
+  COBLI_API_BASE_URL = process.env.COBLI_API_BASE_URL || null;
+  COBLI_API_TOKEN = process.env.COBLI_API_TOKEN || null;
+  COBLI_AUTH_HEADER = process.env.COBLI_AUTH_HEADER || 'Authorization';
+  COBLI_AUTH_SCHEME = process.env.COBLI_AUTH_SCHEME || 'Bearer';
+  COBLI_WEBHOOK_SECRET = process.env.COBLI_WEBHOOK_SECRET || null;
+  COBLI_WEBHOOK_SIGNATURE_HEADER = process.env.COBLI_WEBHOOK_SIGNATURE_HEADER || null;
+  EVENT_WEBHOOK_URL = process.env.EVENT_WEBHOOK_URL || '';
+  EVENT_WEBHOOK_SECRET = process.env.EVENT_WEBHOOK_SECRET || '';
+}
+
+function describeDatabaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { configured: false };
+  const usesCloudSqlSocket = raw.includes('/cloudsql/');
+  const hostHint = usesCloudSqlSocket ? '/cloudsql/...' : (raw.match(/@([^/?]+)/)?.[1] || null);
+  return {
+    configured: true,
+    uses_cloudsql_socket: usesCloudSqlSocket,
+    host_hint: hostHint
+  };
+}
+
+async function loadSecretsFromSecretManager() {
+  const enabled = process.env.SECRET_MANAGER_ENABLED === 'true';
+  if (!enabled) return;
+
+  const projectId = process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+  if (!projectId) {
+    throw new Error('SECRET_MANAGER_ENABLED=true but project id not found (GCP_PROJECT_ID/GOOGLE_CLOUD_PROJECT).');
+  }
+
+  const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
+  const client = new SecretManagerServiceClient();
+  const mappings = [
+    { envVar: 'JWT_SECRET', secretName: process.env.SECRET_JWT_SECRET || 'JWT_SECRET', required: true },
+    // Optional: system must boot even if Conta Azul integration is not configured.
+    { envVar: 'CONTA_AZUL_CLIENT_SECRET', secretName: process.env.SECRET_CONTA_AZUL_CLIENT_SECRET || 'CONTA_AZUL_CLIENT_SECRET', required: false },
+    { envVar: 'CONTA_AZUL_ACCESS_TOKEN', secretName: process.env.SECRET_CONTA_AZUL_ACCESS_TOKEN || 'CONTA_AZUL_ACCESS_TOKEN', required: false },
+    { envVar: 'CONTA_AZUL_REFRESH_TOKEN', secretName: process.env.SECRET_CONTA_AZUL_REFRESH_TOKEN || 'CONTA_AZUL_REFRESH_TOKEN', required: false },
+    { envVar: 'DATABASE_URL', secretName: process.env.SECRET_DATABASE_URL || 'DATABASE_URL', required: true },
+    { envVar: 'SIGNATURE_SECRET', secretName: process.env.SECRET_SIGNATURE_SECRET || 'SIGNATURE_SECRET', required: true },
+    { envVar: 'EVENT_WEBHOOK_SECRET', secretName: process.env.SECRET_EVENT_WEBHOOK_SECRET || 'EVENT_WEBHOOK_SECRET', required: false },
+    { envVar: 'COBLI_API_TOKEN', secretName: process.env.SECRET_COBLI_API_TOKEN || 'COBLI_API_TOKEN', required: false }
+  ];
+
+  const missing = [];
+  for (const item of mappings) {
+    if (process.env[item.envVar]) continue;
+    try {
+      const name = `projects/${projectId}/secrets/${item.secretName}/versions/latest`;
+      const [version] = await client.accessSecretVersion({ name });
+      const payload = version?.payload?.data ? version.payload.data.toString('utf8').trim() : '';
+      if (payload) {
+        process.env[item.envVar] = payload;
+      } else if (item.required) {
+        missing.push(item.envVar);
+      }
+    } catch (error) {
+      if (item.required) {
+        logger.error('Required secret not loaded from Secret Manager', {
+          envVar: item.envVar,
+          secretName: item.secretName,
+          error: error.message
+        });
+        missing.push(item.envVar);
+      } else {
+        logger.warn('Optional secret not loaded from Secret Manager', {
+          envVar: item.envVar,
+          secretName: item.secretName,
+          error: error.message
+        });
+      }
+    }
+  }
+
+  if (missing.length) {
+    throw new Error(`Required secrets missing: ${missing.join(', ')}`);
+  }
+
+  logger.info('Secrets loaded from Secret Manager', {
+    projectId,
+    loaded: mappings.map(m => m.envVar).filter(envVar => !!process.env[envVar]).length
+  });
+}
+
+applyRuntimeConfigFromEnv();
 
 async function emitEventWebhook(eventType, payload = {}) {
   if (!EVENT_WEBHOOK_URL) return;
@@ -809,7 +915,8 @@ async function authenticateToken(req, res, next) {
   } catch (err) {
     logger.warn('Invalid token used', { error: err.message, ip: req.ip });
     await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
-    return res.status(403).json({ error: 'Invalid or expired token' });
+    // Invalid/expired tokens should be 401 (session expired). 403 is reserved for valid tokens without access.
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
 
@@ -845,7 +952,7 @@ async function authenticateTokenFromQuery(req, res, next) {
   } catch (err) {
     logger.warn('Invalid token used', { error: err.message, ip: req.ip });
     await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
-    return res.status(403).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
 
@@ -864,43 +971,7 @@ function notifyFlowSubscribers(company, payload) {
   }
 }
 
-// Security: Authentication middleware (accepts token in query for streaming)
-async function authenticateTokenFromQuery(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const queryToken = req.query && typeof req.query.access_token === 'string' ? req.query.access_token : null;
-  const token = (authHeader && authHeader.split(' ')[1]) || queryToken;
-
-  if (!token) {
-    logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
-    await recordAuditEvent(req, 'AUTH_MISSING_TOKEN', `Missing token for ${req.path}`);
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  try {
-    const user = jwt.verify(token, JWT_SECRET);
-    if (isDbReady()) {
-      const session = await getUserSession(user.id);
-      if (session?.revoked_after) {
-        const iatMs = (user.iat || 0) * 1000;
-        if (iatMs && iatMs < new Date(session.revoked_after).getTime()) {
-          await recordAuditEvent(req, 'AUTH_REVOKED', `Session revoked for ${req.path}`);
-          return res.status(403).json({ error: 'Session revoked' });
-        }
-      }
-      const dbUser = await getUserById(user.id);
-      if (!dbUser) {
-        await recordAuditEvent(req, 'AUTH_USER_NOT_FOUND', `User not found for ${req.path}`);
-        return res.status(403).json({ error: 'User not found' });
-      }
-    }
-    req.user = user;
-    next();
-  } catch (err) {
-    logger.warn('Invalid token used', { error: err.message, ip: req.ip });
-    await recordAuditEvent(req, 'AUTH_INVALID_TOKEN', `Invalid token for ${req.path}`);
-    return res.status(403).json({ error: 'Invalid or expired token' });
-  }
-}
+// NOTE: authenticateTokenFromQuery is defined once above. (Previously duplicated during refactor.)
 
 // Security: Role-based authorization middleware
 function authorizeRole(requiredRole) {
@@ -970,6 +1041,18 @@ app.post('/api/auth/register', [
   body('name').optional().isLength({ min: 2, max: 100 }).trim().escape(),
 ], async (req, res) => {
   try {
+    // In production, avoid leaving public self-registration enabled.
+    // To bootstrap the very first admin, allow registration only when DB is ready and empty.
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_REGISTER !== 'true') {
+      if (!isDbReady()) {
+        return res.status(503).json({ error: 'Database not ready' });
+      }
+      const existing = await listUsers();
+      if (existing.length > 0) {
+        return res.status(403).json({ error: 'Registration disabled' });
+      }
+    }
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       logger.warn('Registration validation failed', { errors: errors.array() });
@@ -1312,19 +1395,26 @@ app.post(
     }
     const items = Array.isArray(req.body) ? req.body : (req.body?.payments || []);
     const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
-    const normalized = items.map(item => ({
-      id: String(item.id || crypto.randomUUID()),
-      company,
-      fornecedor: item.fornecedor || 'N/A',
-      data: item.data || null,
-      descricao: item.descricao || '',
-      valor: Number(item.valor) || 0,
-      centro: item.centro || '',
-      categoria: item.categoria || '',
-      assinatura: item.assinatura || null,
-      created_at: new Date(),
-      updated_at: new Date()
-    }));
+    const dedup = new Map();
+    for (const item of items) {
+      const id = String(item.id || crypto.randomUUID());
+      dedup.set(id, {
+        id,
+        company,
+        fornecedor: item.fornecedor || 'N/A',
+        data: item.data || null,
+        descricao: item.descricao || '',
+        valor: Number(item.valor) || 0,
+        centro: item.centro || '',
+        categoria: item.categoria || '',
+        assinatura: item.assinatura || null,
+        version: Number.isFinite(item.version) ? Number(item.version) : 0,
+        updated_by: req.user?.username || null,
+        created_at: item.created_at || new Date(),
+        updated_at: new Date()
+      });
+    }
+    const normalized = Array.from(dedup.values());
     await replaceFlowPayments(normalized, company);
     await recordAuditEvent(req, normalized.length ? 'FLOW_IMPORT' : 'FLOW_CLEAR', `Fluxo ${company} importado (${normalized.length} registros).`, {
       company,
@@ -1398,7 +1488,9 @@ app.post(
         });
       }
       if (existing) {
-        saved = await updateFlowPaymentWithVersion(payment.id, payment, expected, company);
+        // Avoid mutating created_at, keep ordering stable.
+        const { created_at, ...updates } = payment;
+        saved = await updateFlowPaymentWithVersion(payment.id, updates, expected, company);
         if (!saved) {
           const current = await getFlowPaymentById(payment.id, company);
           return respondConflict(req, res, {
@@ -1427,6 +1519,11 @@ app.post(
       company,
       paymentId: payment.id
     });
+    notifyFlowSubscribers(company, {
+      type: 'payment_upserted',
+      company,
+      payment: saved
+    });
     res.json({ success: true, payment: saved });
   } catch (error) {
     logger.error('Error creating flow payment', { error: error.message });
@@ -1450,7 +1547,15 @@ app.patch(
       return res.status(503).json({ error: 'Database not ready' });
     }
     const paymentId = req.params.id;
-    const assinatura = req.body?.assinatura || null;
+    const incoming = req.body?.assinatura && typeof req.body.assinatura === 'object' ? req.body.assinatura : {};
+    // Server is the source of truth for who/when signed (auditability across devices).
+    const assinatura = {
+      ...incoming,
+      usuarioNome: req.user?.username || req.user?.email || incoming?.usuarioNome || 'usuario',
+      userId: req.user?.id || null,
+      ip: req.ip,
+      dataISO: new Date().toISOString()
+    };
     const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
     const updated = await signFlowPaymentIfUnsigned(paymentId, assinatura, company);
     if (!updated) {
@@ -2011,9 +2116,17 @@ app.get('/api/health', async (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     db_ready: dbReady,
+    db: describeDatabaseUrl(process.env.DATABASE_URL),
     permissions_enforced: PERMISSIONS_ENFORCED,
     company_access_enforced: ENFORCE_COMPANY_ACCESS,
+    secret_manager_enabled: process.env.SECRET_MANAGER_ENABLED === 'true',
+    secret_manager_project: process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || null,
     roles: roleCount,
+    runtime: {
+      sse_subscribers: flowSubscribers.size,
+      conflicts_total: runtimeStats.conflictsTotal,
+      last_conflict_at: runtimeStats.lastConflictAt
+    },
     services: {
       conta_azul_configured: !!CLIENT_ID && !!CLIENT_SECRET && !!TOKEN_URL,
       cobli_configured: !!COBLI_API_BASE_URL && !!COBLI_API_TOKEN
@@ -2536,32 +2649,62 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
+let dbInitLoopRunning = false;
+
+async function initializeDatabaseAndRuntime() {
+  if (dbInitLoopRunning || isDbReady()) return;
+  dbInitLoopRunning = true;
+  const retryMs = Number(process.env.DB_STARTUP_RETRY_MS || 15000);
+  while (!isDbReady()) {
+    try {
+      await initDb();
+      logger.info('Database connected');
+      const schema = await validateDbSchema();
+      if (!schema.ok) {
+        logger.error('ALERT_DB_SCHEMA_INVALID', { missing: schema.missing });
+        if (DB_SCHEMA_STRICT) {
+          throw new Error(`Database schema validation failed: ${schema.missing.join(', ')}`);
+        }
+      } else {
+        logger.info('Database schema validated');
+      }
+      await loadTokensFromDb();
+      logger.info('Runtime initialized');
+      break;
+    } catch (error) {
+      logger.error('Database initialization failed, retrying', {
+        error: error.message,
+        retry_ms: retryMs
+      });
+      await new Promise(resolve => setTimeout(resolve, retryMs));
+    }
+  }
+  dbInitLoopRunning = false;
+}
+
 // Start server
 async function startServer() {
-  try {
-    if (process.env.NODE_ENV === 'production') {
-      if (!process.env.JWT_SECRET) {
-        throw new Error('JWT_SECRET is required in production');
-      }
+  await loadSecretsFromSecretManager();
+  applyRuntimeConfigFromEnv();
+
+  if (process.env.NODE_ENV === 'production') {
+    if (!JWT_SECRET) {
+      throw new Error('JWT_SECRET is required in production');
     }
-    await initDb();
-    logger.info('Database connected');
-    const schema = await validateDbSchema();
-    if (!schema.ok) {
-      logger.error('ALERT_DB_SCHEMA_INVALID', { missing: schema.missing });
-      if (DB_SCHEMA_STRICT) {
-        throw new Error(`Database schema validation failed: ${schema.missing.join(', ')}`);
-      }
-    } else {
-      logger.info('Database schema validated');
+    if (!SIGNATURE_SECRET) {
+      throw new Error('SIGNATURE_SECRET is required in production');
     }
-  } catch (error) {
-    logger.warn('Database unavailable, using in-memory fallback', { error: error.message });
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL is required in production');
+    }
   }
-  await loadTokensFromDb();
+
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log('Conta Azul API integration ready');
+    initializeDatabaseAndRuntime().catch(error => {
+      logger.error('Unexpected DB init loop failure', { error: error.message });
+    });
   });
 }
 

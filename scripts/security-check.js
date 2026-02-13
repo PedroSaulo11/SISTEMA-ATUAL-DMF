@@ -44,6 +44,15 @@ function checkAppYaml() {
     'SIGNATURE_SECRET',
     'EVENT_WEBHOOK_SECRET'
   ];
+  const secretNameKeys = [
+    'SECRET_JWT_SECRET',
+    'SECRET_CONTA_AZUL_CLIENT_SECRET',
+    'SECRET_CONTA_AZUL_ACCESS_TOKEN',
+    'SECRET_CONTA_AZUL_REFRESH_TOKEN',
+    'SECRET_DATABASE_URL',
+    'SECRET_SIGNATURE_SECRET',
+    'SECRET_EVENT_WEBHOOK_SECRET'
+  ];
 
   for (const key of secretLikeKeys) {
     const regex = new RegExp(`^\\s*${key}:\\s*\"([^\"]*)\"\\s*$`, 'm');
@@ -69,20 +78,48 @@ function checkAppYaml() {
     }
   }
 
-  const missingSecretEnvKeys = secretLikeKeys.filter((key) => {
-    const secretEnvRegex = new RegExp(`^\\s*${key}:\\s*projects\\/[^\\s]+\\/secrets\\/${key}\\/versions\\/latest\\s*$`, 'm');
-    return !secretEnvRegex.test(appYaml);
-  });
+  const hasSecretEnvVariables = /^\s*secret_env_variables\s*:/m.test(appYaml);
+  const secretManagerEnabled = /^\s*SECRET_MANAGER_ENABLED:\s*"true"\s*$/m.test(appYaml);
 
-  if (missingSecretEnvKeys.length > 0) {
-    const msg = `secret_env_variables ausente/incompleto para: ${missingSecretEnvKeys.join(', ')}`;
-    if (strictMode) {
-      fail(msg);
+  if (hasSecretEnvVariables) {
+    const missingSecretEnvKeys = secretLikeKeys.filter((key) => {
+      const secretEnvRegex = new RegExp(`^\\s*${key}:\\s*projects\\/[^\\s]+\\/secrets\\/${key}\\/versions\\/latest\\s*$`, 'm');
+      return !secretEnvRegex.test(appYaml);
+    });
+    if (missingSecretEnvKeys.length > 0) {
+      const msg = `secret_env_variables ausente/incompleto para: ${missingSecretEnvKeys.join(', ')}`;
+      if (strictMode) {
+        fail(msg);
+      } else {
+        warn(msg);
+      }
     } else {
-      warn(msg);
+      ok('secret_env_variables configurado para segredos criticos.');
     }
   } else {
-    ok('secret_env_variables configurado para segredos criticos.');
+    if (!secretManagerEnabled) {
+      const msg = 'Nem secret_env_variables nem SECRET_MANAGER_ENABLED=true encontrados.';
+      if (strictMode) {
+        fail(msg);
+      } else {
+        warn(msg);
+      }
+    } else {
+      const missingSecretNameKeys = secretNameKeys.filter((key) => {
+        const regex = new RegExp(`^\\s*${key}:\\s*\"([^\"]+)\"\\s*$`, 'm');
+        return !regex.test(appYaml);
+      });
+      if (missingSecretNameKeys.length > 0) {
+        const msg = `Mapeamento de nomes de secrets ausente/incompleto: ${missingSecretNameKeys.join(', ')}`;
+        if (strictMode) {
+          fail(msg);
+        } else {
+          warn(msg);
+        }
+      } else {
+        ok('Secret Manager habilitado via env (compativel com App Engine atual).');
+      }
+    }
   }
 }
 

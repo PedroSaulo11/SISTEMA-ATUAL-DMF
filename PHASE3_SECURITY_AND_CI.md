@@ -15,17 +15,22 @@
   - `check:phase3`
 
 ## Bloco 2 (concluido)
-- Segredos removidos de `app.yaml` e migrados para `secret_env_variables`.
-- CI endurecido com `SECURITY_GATE_STRICT=true`.
+- Segredos removidos de `app.yaml` e migrados para Secret Manager.
+- CI mantido com `SECURITY_GATE_STRICT=false` por compatibilidade de rollout.
 - `scripts/security-check.js` atualizado para validar:
   - ausencia de segredo hardcoded no `app.yaml`
-  - presenca obrigatoria dos segredos criticos em `secret_env_variables`.
+  - estrategia de segredos valida (`secret_env_variables` ou Secret Manager via env).
 
 ## Ajuste de compatibilidade (App Engine atual)
 - O deploy com `gcloud app deploy` retornou erro de schema: `Unexpected attribute 'secret_env_variables'`.
-- Para manter operacao no App Engine atual, o `app.yaml` voltou para `env_variables`.
-- CI voltou para `SECURITY_GATE_STRICT=false` temporariamente.
-- Migracao definitiva de segredos fica pendente de uma estrategia compativel com App Engine neste projeto.
+- Estrategia aplicada: manter `app.yaml` com variaveis nao sensiveis + carregar segredos do Secret Manager no startup do `server.js`.
+- Chaves de mapeamento no `app.yaml`:
+  - `SECRET_MANAGER_ENABLED=true`
+  - `GCP_PROJECT_ID`
+  - `SECRET_JWT_SECRET`, `SECRET_CONTA_AZUL_CLIENT_SECRET`, `SECRET_CONTA_AZUL_ACCESS_TOKEN`,
+    `SECRET_CONTA_AZUL_REFRESH_TOKEN`, `SECRET_DATABASE_URL`, `SECRET_SIGNATURE_SECRET`,
+    `SECRET_EVENT_WEBHOOK_SECRET`
+- Segredos reais ficam no Secret Manager, nao no `app.yaml`.
 
 ## Segredos obrigatorios no Secret Manager
 - `JWT_SECRET`

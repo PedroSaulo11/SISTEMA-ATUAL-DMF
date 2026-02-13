@@ -527,6 +527,7 @@ class DataProcessor {
                 if (response.status === 401) {
                     console.warn('Flow payments fetch unauthorized');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    try { hardLogout(); } catch (_) {}
                     this.resetFlowBackoff();
                     return false;
                 }
@@ -933,6 +934,7 @@ class DataProcessor {
                 if (response.status === 401) {
                     alert('Sessão expirada. Faça login novamente para sincronizar o fluxo.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    try { hardLogout(); } catch (_) {}
                 }
                 if (response.status === 403) {
                     alert('Sem permissão para sincronizar o fluxo.');
@@ -1350,6 +1352,7 @@ class DataProcessor {
                 if (response.status === 401) {
                     alert('Sessão expirada. Faça login novamente para sincronizar o pagamento.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    try { hardLogout(); } catch (_) {}
                 }
                 if (response.status === 403) {
                     alert('Sem permissão para sincronizar o pagamento.');
@@ -1831,23 +1834,17 @@ class UIManager {
         if (this.backendStatusTimer) return;
         const check = async () => {
             try {
-                const response = await fetch(`${getApiBase()}/api/flow-payments`, {
-                    method: 'GET',
-                    cache: 'no-store',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...getAuthHeaders()
-                    }
-                });
-                if (response.status === 401 || response.status === 403) {
-                    setBackendStatus('Servidor: sessão expirada', 'warn');
+                const response = await fetch(`${getApiBase()}/api/health`, { method: 'GET', cache: 'no-store' });
+                if (!response.ok) {
+                    setBackendStatus('Servidor: indisponível', 'error');
                     return;
                 }
-                if (response.ok) {
-                    setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
-                } else {
-                    setBackendStatus('Servidor: indisponível', 'error');
+                const data = await response.json();
+                if (data && data.db_ready === false) {
+                    setBackendStatus(`Servidor: online (banco iniciando)`, 'warn');
+                    return;
                 }
+                setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
             } catch (_) {
                 setBackendStatus('Servidor: indisponível', 'error');
             }
@@ -2043,7 +2040,19 @@ class UIManager {
                 const payload = event?.data ? JSON.parse(event.data) : null;
                 const relevant = !payload?.company || payload.company === company;
                 if (!relevant) return;
-                if (payload?.type === 'payment_signed' || payload?.type === 'flow_imported') {
+                if (payload?.type === 'payment_signed') {
+                    this.applyStreamSignedUpdate(payload);
+                    this.core.data.loadFromBackend(true, company).then(() => {
+                        this.renderPaymentsTable();
+                        this.updateStats();
+                    });
+                    return;
+                }
+                if (payload?.type === 'payment_upserted') {
+                    this.applyStreamUpsertUpdate(payload);
+                    return;
+                }
+                if (payload?.type === 'flow_imported') {
                     this.core.data.loadFromBackend(true, company).then(() => {
                         this.renderPaymentsTable();
                         this.updateStats();
@@ -2057,6 +2066,46 @@ class UIManager {
             this.stopFlowPushStream();
             this.scheduleFlowPushReconnect();
         };
+    }
+
+    applyStreamSignedUpdate(payload) {
+        const id = String(payload?.paymentId || '').trim();
+        if (!id || !payload?.assinatura) return;
+        const idx = (this.core?.data?.records || []).findIndex((item) => String(item?.id) === id);
+        if (idx === -1) return;
+        const current = this.core.data.records[idx];
+        if (current?.assinatura) return;
+        this.core.data.records[idx] = {
+            ...current,
+            assinatura: payload.assinatura
+        };
+        this.core.data.save();
+        this.renderPaymentsTable();
+        this.updateStats();
+        this.updateFlowStatusBadges();
+    }
+
+    applyStreamUpsertUpdate(payload) {
+        const payment = payload?.payment;
+        if (!payment || !payment.id) return;
+        const company = payment.company || this.core?.data?.currentCompany || this.companyFilter || 'DMF';
+        if (this.core?.data?.currentCompany && company !== this.core.data.currentCompany) return;
+        const id = String(payment.id);
+        const idx = (this.core?.data?.records || []).findIndex((item) => String(item?.id) === id);
+        if (idx === -1) {
+            this.core.data.records.push(payment);
+        } else {
+            const existing = this.core.data.records[idx] || {};
+            this.core.data.records[idx] = {
+                ...existing,
+                ...payment,
+                created_at: existing.created_at || payment.created_at
+            };
+        }
+        this.core.data.save();
+        this.renderPaymentsTable();
+        this.updateStats();
+        this.updateFlowStatusBadges();
     }
 
     stopFlowPushStream() {
@@ -3131,7 +3180,13 @@ class UIManager {
             this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const publicBase = `${getApiBase()}/verify.html?id=`;
 
-        const rows = this.getFilteredPayments ? this.getFilteredPayments() : this.core.data.records;
+        const rowsRaw = this.getFilteredPayments ? this.getFilteredPayments() : this.core.data.records;
+        const rows = (rowsRaw || []).slice().sort((a, b) => {
+            const aTime = a?.created_at ? new Date(a.created_at).getTime() : 0;
+            const bTime = b?.created_at ? new Date(b.created_at).getTime() : 0;
+            if (aTime !== bTime) return aTime - bTime;
+            return String(a?.id || '').localeCompare(String(b?.id || ''));
+        });
 
         body.innerHTML = rows.map(p => {
             const assinaturaTime = p.assinatura?.dataISO

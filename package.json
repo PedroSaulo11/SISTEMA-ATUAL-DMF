@@ -10,10 +10,14 @@
     "dev:webhook": "nodemon webhook-server.js",
     "check:syntax": "node --check server.js && node --check script.js && node --check bootstrap.js",
     "check:security": "node scripts/security-check.js",
+    "check:readiness": "node scripts/readiness-check.js",
     "smoke:health": "node scripts/smoke-health.js",
-    "check:phase3": "npm run check:syntax && npm run check:security && npm run smoke:health"
+    "smoke:multiuser": "node scripts/smoke-multiuser.js",
+    "smoke:prod": "node scripts/smoke-prod.js",
+    "check:phase3": "npm run check:syntax && npm run check:security && npm run check:readiness && npm run smoke:health"
   },
   "dependencies": {
+    "@google-cloud/secret-manager": "^6.1.1",
     "animate.css": "^4.1.1",
     "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",

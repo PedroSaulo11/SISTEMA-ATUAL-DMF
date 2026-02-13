@@ -32,5 +32,8 @@ jobs:
         env:
           SECURITY_GATE_STRICT: "false"
 
+      - name: Readiness check
+        run: npm run check:readiness
+
       - name: Smoke health
         run: npm run smoke:health
