@@ -845,6 +845,43 @@ tr:hover { background: #f8fbff; }
     z-index: 9999;
 }
 
+/* Centered access denied view */
+.access-denied-wrap {
+    min-height: calc(100vh - 40px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.access-denied-card {
+    width: min(720px, 100%);
+    background: var(--bg-card);
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 18px;
+    box-shadow: var(--card-shadow);
+    padding: 28px;
+    animation: fadeInUp 0.24s ease both;
+}
+
+.access-denied-title {
+    margin: 0 0 8px 0;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+}
+
+.access-denied-msg {
+    margin: 0 0 14px 0;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.access-denied-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 .toast {
     background: #0f172a;
     color: #fff;

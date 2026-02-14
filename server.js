@@ -138,6 +138,16 @@ const DEFAULT_COMPANIES = String(process.env.DEFAULT_COMPANIES || 'DMF,JFX,Real 
   .map(s => normalizeCompany(s))
   .filter(Boolean);
 const DEFAULT_COMPANIES_UNIQUE = Array.from(new Set(DEFAULT_COMPANIES));
+
+function isAllowedCompany(company) {
+  if (!company) return false;
+  // When configured, only allow companies from this fixed allow-list.
+  // This prevents `?company=` from becoming an unbounded tenant selector.
+  if (DEFAULT_COMPANIES_UNIQUE.length) {
+    return DEFAULT_COMPANIES_UNIQUE.includes(company);
+  }
+  return true;
+}
 const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
 let lastTokenLoadAt = 0;
 const CRON_SECRET = process.env.CRON_SECRET || '';
@@ -190,6 +200,14 @@ async function enforceCompanyAccess(req, res, next) {
   if (!ENFORCE_COMPANY_ACCESS) return next();
   if (!isDbReady()) return next();
   const role = req.user?.role;
+  const requestedRaw = req.query.company || req.body?.company;
+  const requested = normalizeCompany(requestedRaw);
+  if (requested && !isAllowedCompany(requested)) {
+    await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', `Empresa nao permitida: ${requested}.`, {
+      company: requested
+    });
+    return res.status(403).json({ error: 'Company not allowed' });
+  }
   if (normalizeRole(role) === 'admin') return next();
   const companies = await resolveCompanyAccess(req.user?.id, role);
   if (!companies || companies.length === 0) {
@@ -201,11 +219,9 @@ async function enforceCompanyAccess(req, res, next) {
     });
     return res.status(403).json({ error: 'Company access not configured' });
   }
-  const requestedRaw = req.query.company || req.body?.company;
   if (!requestedRaw) {
     return next();
   }
-  const requested = normalizeCompany(requestedRaw);
   if (!requested) {
     return next();
   }
@@ -222,6 +238,7 @@ function requireCompanyParam(req, res, next) {
   if (!ENFORCE_COMPANY_ACCESS) return next();
   const company = normalizeCompany(req.query.company || req.body?.company);
   if (!company) return res.status(400).json({ error: 'Company required' });
+  if (!isAllowedCompany(company)) return res.status(403).json({ error: 'Company not allowed' });
   return next();
 }
 
@@ -2219,6 +2236,11 @@ app.get('/api/health', async (req, res) => {
       conta_azul_expires_at: tokenExpiry ? new Date(tokenExpiry).toISOString() : null
     }
   });
+});
+
+app.get('/api/companies', authenticateToken, authorizeRole('user'), (req, res) => {
+  // Used by the UI to list/select companies safely.
+  res.json({ companies: DEFAULT_COMPANIES_UNIQUE });
 });
 
 // Admin: list roles

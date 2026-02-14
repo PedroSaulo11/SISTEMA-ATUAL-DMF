@@ -476,9 +476,21 @@ class DataProcessor {
         }
     }
 
+    userCompanyKey() {
+        const u = this.core?.currentUser;
+        const raw = u?.id || u?.email || u?.username || null;
+        if (!raw) return null;
+        const safe = String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
+        return `dmf_current_company_${safe}`;
+    }
+
     setCurrentCompany(company) {
         this.currentCompany = this.normalizeCompany(company);
         localStorage.setItem(this.core.storageKeys.CURRENT_COMPANY, this.currentCompany);
+        try {
+            const k = this.userCompanyKey();
+            if (k) localStorage.setItem(k, this.currentCompany);
+        } catch (_) {}
         this.records = this.loadCompanyPayments(this.currentCompany);
         window.DMF_CONTEXT.pagamentos = this.records;
         window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
@@ -1502,11 +1514,17 @@ class UIManager {
 
     navigate(viewId, activeButton = null) {
         if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
-            alert('Acesso restrito à administração.');
+            this.showAccessDenied({
+                title: 'Acesso negado',
+                message: 'Você não tem permissão para acessar a aba Administração. Peça ao administrador para liberar o acesso.'
+            }, activeButton);
             return;
         }
         if (viewId === 'audit' && !this.core.admin.hasPermission(this.core.currentUser, 'audit_access')) {
-            alert('Acesso restrito aos logs de auditoria.');
+            this.showAccessDenied({
+                title: 'Acesso negado',
+                message: 'Você não tem permissão para acessar os Logs de Auditoria. Peça ao administrador para liberar o acesso.'
+            }, activeButton);
             return;
         }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -1550,7 +1568,57 @@ class UIManager {
     showLogin() {
         document.getElementById('appSection').classList.add('hidden');
         document.getElementById('loginSection').classList.remove('hidden');
+        // Ensure background timers/streams don't keep running after logout.
+        this.stopFlowAutoRefresh();
         this.stopDashboardSummaryAutoRefresh();
+    }
+
+    showAccessDenied({ title, message }, activeButton = null) {
+        const view = document.getElementById('accessDenied');
+        if (!view) return;
+
+        // Stop background activity for views that might have been active.
+        this.stopFlowAutoRefresh();
+        this.stopDashboardSummaryAutoRefresh();
+
+        document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+        view.classList.remove('hidden');
+
+        document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
+        if (activeButton) activeButton.classList.add('active');
+
+        const safeTitle = String(title || 'Acesso negado');
+        const safeMsg = String(message || 'Você não tem permissão para acessar esta aba.');
+        view.innerHTML = `
+            <div class="access-denied-wrap">
+                <div class="access-denied-card">
+                    <h2 class="access-denied-title">${safeTitle}</h2>
+                    <p class="access-denied-msg">${safeMsg}</p>
+                    <div class="access-denied-actions">
+                        <button class="btn btn-primary" type="button" data-access-denied-go="dashboard">Voltar ao Dashboard</button>
+                        <button class="btn btn-ghost" type="button" data-access-denied-go="payments">Ir para o Fluxo</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const onClick = (e) => {
+            const btn = e.target.closest('button[data-access-denied-go]');
+            if (!btn) return;
+            const target = String(btn.getAttribute('data-access-denied-go') || '').trim();
+            if (target === 'dashboard') {
+                this.navigate('dashboard', document.querySelector('[data-nav="dashboard"]'));
+                return;
+            }
+            if (target === 'payments') {
+                const first = this.getFirstAvailableCompanyButton();
+                this.navigate('payments', first || document.querySelector('[data-nav="payments"]'));
+            }
+        };
+        if (!view.dataset.bound) {
+            view.addEventListener('click', onClick);
+            view.dataset.bound = 'true';
+        }
     }
 
     initQuickActions() {
@@ -1760,19 +1828,42 @@ class UIManager {
     }
 
     async loadInitialDashboardData() {
-        const company = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+        let company = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+        try {
+            // Prefer per-user last company to avoid cross-user localStorage bleed.
+            const raw = this.core?.currentUser?.id || this.core?.currentUser?.email || this.core?.currentUser?.username || null;
+            if (raw) {
+                const safe = String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
+                const k = `dmf_current_company_${safe}`;
+                const persisted = localStorage.getItem(k);
+                if (persisted) company = this.normalizeCompany(persisted);
+            }
+        } catch (_) {}
         this.core.data.setCurrentCompany(company);
         this.setCompanyFilter(company);
 
         const primaryOk = await this.core.data.loadFromBackend(true, company);
         if (primaryOk) return true;
 
-        const fallbackButton = this.getFirstAvailableCompanyButton();
-        const fallbackCompany = fallbackButton?.getAttribute('data-company');
+        // UI-based fallback (buttons) can be hidden depending on role; prefer backend source of truth.
+        let fallbackCompany = null;
+        try {
+            const resp = await fetch(`${getApiBase()}/api/companies`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+            if (resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                const list = Array.isArray(data?.companies) ? data.companies : [];
+                fallbackCompany = list.find(c => this.normalizeCompany(c) !== company) || list[0] || null;
+            }
+        } catch (_) {}
+
+        if (!fallbackCompany) {
+            const fallbackButton = this.getFirstAvailableCompanyButton();
+            fallbackCompany = fallbackButton?.getAttribute('data-company') || null;
+        }
         if (!fallbackCompany) return false;
 
         const normalizedFallback = this.normalizeCompany(fallbackCompany);
-        if (normalizedFallback === company) return false;
+        if (!normalizedFallback || normalizedFallback === company) return false;
 
         this.core.data.setCurrentCompany(normalizedFallback);
         this.setCompanyFilter(normalizedFallback);
@@ -1958,10 +2049,16 @@ class UIManager {
         const isAdminAccess = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const canAudit = this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
         if (currentView === 'admin' && !isAdminAccess) {
-            this.navigate('dashboard', document.querySelector('[data-nav="dashboard"]'));
+            this.showAccessDenied({
+                title: 'Acesso negado',
+                message: 'Você não tem permissão para acessar a aba Administração.'
+            }, document.querySelector('[data-nav="dashboard"]'));
         }
         if (currentView === 'audit' && !canAudit) {
-            this.navigate('dashboard', document.querySelector('[data-nav="dashboard"]'));
+            this.showAccessDenied({
+                title: 'Acesso negado',
+                message: 'Você não tem permissão para acessar os Logs de Auditoria.'
+            }, document.querySelector('[data-nav="dashboard"]'));
         }
         const historyBtn = document.querySelector('[data-payments-tab="history"]');
         if (historyBtn && historyBtn.classList.contains('active') &&
@@ -2126,16 +2223,19 @@ class UIManager {
     }
 
     switchAuditTab(tab, activeButton = null) {
+        if (tab === 'logins' && !this.core.admin.hasPermission(this.core.currentUser, 'audit_login_access')) {
+            this.showAccessDenied({
+                title: 'Acesso negado',
+                message: 'Você não tem permissão para acessar os logs de acesso (logins). Peça ao administrador para liberar o acesso.'
+            }, document.querySelector('[data-nav="audit"]'));
+            return;
+        }
         document.querySelectorAll('.audit-tab-content').forEach(t => t.classList.add('hidden'));
         document.querySelectorAll('[data-audit-tab]').forEach(b => b.classList.remove('active'));
         document.getElementById(`audit${tab.charAt(0).toUpperCase()}${tab.slice(1)}Tab`).classList.remove('hidden');
         if (activeButton) activeButton.classList.add('active');
 
         if (tab === 'logins') {
-            if (!this.core.admin.hasPermission(this.core.currentUser, 'audit_login_access')) {
-                alert('Acesso restrito aos logs de acesso.');
-                return;
-            }
             this.loadLoginAudits();
         }
     }
@@ -4982,10 +5082,14 @@ window.system = system;
 
 // Hard logout for production: clear session and force UI reset
 window.dmfLogout = function dmfLogout() {
+    if (window.__DMF_LOGOUT_IN_PROGRESS) return;
+    window.__DMF_LOGOUT_IN_PROGRESS = true;
     try {
-        system?.auth?.logout?.();
+        // Stop any background streams first to avoid UI "double transition" effects.
+        system?.ui?.stopFlowAutoRefresh?.();
+        system?.ui?.stopDashboardSummaryAutoRefresh?.();
     } catch (e) {
-        console.warn('Logout failed, falling back to storage clear', e);
+        // ignore
     }
     try {
         localStorage.removeItem('dmf_active_session');
@@ -4993,8 +5097,14 @@ window.dmfLogout = function dmfLogout() {
     } catch (e) {
         console.warn('Failed to clear local storage', e);
     }
-    if (window.location && typeof window.location.reload === 'function') {
-        window.location.reload();
+    try {
+        // Use the normal UI logout path (shows login screen). Avoid full reload to prevent
+        // the login animation from playing twice.
+        system?.auth?.logout?.();
+    } catch (e) {
+        try { system?.ui?.showLogin?.(); } catch (_) {}
+    } finally {
+        window.__DMF_LOGOUT_IN_PROGRESS = false;
     }
 };
 
