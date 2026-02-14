@@ -1,4 +1,4 @@
-// ==== DMF BRAIN (auto-gerado) ====
+﻿// ==== DMF BRAIN (auto-gerado) ====
 window.DMF_BRAIN = window.DMF_BRAIN || {
   usuarios: [],
   pagamentos: [],
@@ -2707,53 +2707,89 @@ class UIManager {
         return key;
     }
 
-    loadBudgets() {
+    async fetchMonthlyReportFromBackend(monthKey) {
+        const token = localStorage.getItem('dmf_api_token');
+        if (!token) return null;
         try {
-            const raw = localStorage.getItem('dmf_budget_limits');
-            return raw ? JSON.parse(raw) : {};
+            const response = await fetch(`${getApiBase()}/api/reports/monthly?month=${encodeURIComponent(monthKey)}`, {
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) return null;
+            return await response.json();
         } catch (_) {
-            return {};
+            return null;
         }
     }
 
-    saveBudgets(budgets) {
-        localStorage.setItem('dmf_budget_limits', JSON.stringify(budgets || {}));
+    async saveBudgetsToBackend(monthKey, budgets) {
+        const token = localStorage.getItem('dmf_api_token');
+        if (!token) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/budgets?month=${encodeURIComponent(monthKey)}`, {
+                method: 'PUT',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
+                body: JSON.stringify({ budgets })
+            });
+            return response.ok;
+        } catch (_) {
+            return false;
+        }
     }
 
-    renderMonthlyReports() {
+    async renderMonthlyReports() {
         const monthKey = this.getSelectedReportMonth();
-        const companyTotals = this.core.data.getCompanyTotalsForMonth(monthKey);
-        const costTotals = this.core.data.getCostCenterTotalsForMonth(monthKey);
+        const payload = await this.fetchMonthlyReportFromBackend(monthKey);
+
+        const companyTotals = payload?.report?.totals_by_company || {};
+        const grandTotal = Number(payload?.report?.grand_total || 0) || 0;
+        const topCenters = Array.isArray(payload?.report?.top_cost_centers) ? payload.report.top_cost_centers : [];
+        const budgets = payload?.budgets && typeof payload.budgets === 'object' ? payload.budgets : {};
+
+        // Keep budget inputs in sync with backend values (admin only).
+        this.populateBudgetInputs(budgets);
+
         const companyList = document.getElementById('reportCompanyTotals');
         const costList = document.getElementById('reportCostCenters');
+
         if (companyList) {
-            const items = Object.entries(companyTotals).map(([name, value]) => `
-                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
-            `).join('');
-            companyList.innerHTML = items || '<div>Nenhum dado no período.</div>';
+            const rows = [];
+            rows.push(`<div class="report-item report-item-total"><span>Total (3 empresas)</span><strong>R$ ${grandTotal.toLocaleString('pt-BR')}</strong></div>`);
+            Object.entries(companyTotals).forEach(([name, value]) => {
+                rows.push(`<div class="report-item"><span>${name}</span><strong>R$ ${Number(value || 0).toLocaleString('pt-BR')}</strong></div>`);
+            });
+            companyList.innerHTML = rows.join('') || '<div>Nenhum dado no período.</div>';
         }
+
         if (costList) {
-            const sorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 8);
-            const items = sorted.map(([name, value]) => `
-                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
+            const items = topCenters.map((item) => `
+                <div class="report-item"><span>${item.center}</span><strong>R$ ${Number(item.total || 0).toLocaleString('pt-BR')}</strong></div>
             `).join('');
             costList.innerHTML = items || '<div>Nenhum dado no período.</div>';
         }
 
-        const budgets = this.loadBudgets();
         const budgetDMF = Number(budgets.DMF) || 0;
         const budgetJFX = Number(budgets.JFX) || 0;
         const budgetReal = Number(budgets['Real Energy']) || 0;
         const alerts = [];
-        if (budgetDMF > 0 && companyTotals.DMF > budgetDMF) {
-            alerts.push(`DMF excedeu o orçamento: R$ ${companyTotals.DMF.toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
+
+        if (budgetDMF > 0 && Number(companyTotals.DMF || 0) > budgetDMF) {
+            alerts.push(`DMF excedeu o orçamento: R$ ${Number(companyTotals.DMF || 0).toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
         }
-        if (budgetJFX > 0 && companyTotals.JFX > budgetJFX) {
-            alerts.push(`JFX excedeu o orçamento: R$ ${companyTotals.JFX.toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
+        if (budgetJFX > 0 && Number(companyTotals.JFX || 0) > budgetJFX) {
+            alerts.push(`JFX excedeu o orçamento: R$ ${Number(companyTotals.JFX || 0).toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
         }
-        if (budgetReal > 0 && companyTotals['Real Energy'] > budgetReal) {
-            alerts.push(`Real Energy excedeu o orçamento: R$ ${companyTotals['Real Energy'].toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
+        if (budgetReal > 0 && Number(companyTotals['Real Energy'] || 0) > budgetReal) {
+            alerts.push(`Real Energy excedeu o orçamento: R$ ${Number(companyTotals['Real Energy'] || 0).toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
         }
+
         const alertBox = document.getElementById('budgetAlerts');
         if (alertBox) {
             if (alerts.length) {
@@ -2784,22 +2820,21 @@ class UIManager {
         }
     }
 
-    populateBudgetInputs() {
-        const budgets = this.loadBudgets();
+    populateBudgetInputs(budgets = null) {
+        const data = budgets && typeof budgets === 'object' ? budgets : {};
         const dmf = document.getElementById('budgetDMF');
         const jfx = document.getElementById('budgetJFX');
         const real = document.getElementById('budgetReal');
-        if (dmf) dmf.value = Number(budgets.DMF || 0) || '';
-        if (jfx) jfx.value = Number(budgets.JFX || 0) || '';
-        if (real) real.value = Number(budgets['Real Energy'] || 0) || '';
+        if (dmf) dmf.value = Number(data.DMF || 0) || '';
+        if (jfx) jfx.value = Number(data.JFX || 0) || '';
+        if (real) real.value = Number(data['Real Energy'] || 0) || '';
         const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const budgetSection = document.getElementById('budgetSection');
         if (budgetSection) {
             budgetSection.classList.toggle('hidden', !isAdmin);
         }
     }
-
-    getArchiveFilterState() {
+getArchiveFilterState() {
         const search = (document.getElementById('archiveSearchInput')?.value || '').trim().toLowerCase();
         const startValue = document.getElementById('archiveStart')?.value || '';
         const endValue = document.getElementById('archiveEnd')?.value || '';
@@ -5033,12 +5068,17 @@ function initDomBindings() {
         });
     }
 
-    const saveBudgetsButton = document.getElementById('btnSaveBudgets');
+        const saveBudgetsButton = document.getElementById('btnSaveBudgets');
     if (saveBudgetsButton) {
-        saveBudgetsButton.addEventListener('click', function () {
+        saveBudgetsButton.addEventListener('click', async function () {
             const isAdmin = system?.admin?.hasPermission?.(system?.currentUser, 'admin_access');
             if (!isAdmin) {
-                alert('Somente admin pode salvar orçamentos.');
+                alert('Somente admin pode salvar orcamentos.');
+                return;
+            }
+            const monthKey = system?.ui?.getSelectedReportMonth?.();
+            if (!monthKey) {
+                showToast('Selecione o mes do relatorio.', 'warn');
                 return;
             }
             const budgets = {
@@ -5046,13 +5086,16 @@ function initDomBindings() {
                 JFX: Number(document.getElementById('budgetJFX')?.value || 0),
                 'Real Energy': Number(document.getElementById('budgetReal')?.value || 0)
             };
-            system?.ui?.saveBudgets?.(budgets);
+            const ok = await system?.ui?.saveBudgetsToBackend?.(monthKey, budgets);
+            if (!ok) {
+                showToast('Falha ao salvar orcamentos no servidor.', 'warn');
+                return;
+            }
+            showToast('Orcamentos salvos.', 'success');
             system?.ui?.renderMonthlyReports?.();
-            alert('Orçamentos salvos.');
         });
     }
-
-    const signatureSearchButton = document.getElementById('signatureSearchButton');
+const signatureSearchButton = document.getElementById('signatureSearchButton');
     if (signatureSearchButton) {
         signatureSearchButton.addEventListener('click', function () {
             system.audit.searchSignatureById();

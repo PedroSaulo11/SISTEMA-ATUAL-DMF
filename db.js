@@ -117,6 +117,14 @@ const CenterCompanyModel = () => getSequelize().define('app_center_companies', {
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const BudgetLimitModel = () => getSequelize().define('budget_limits', {
+  month_key: { type: DataTypes.TEXT, primaryKey: true }, // YYYY-MM
+  company: { type: DataTypes.TEXT, primaryKey: true },
+  limit_value: { type: DataTypes.DOUBLE, allowNull: false, defaultValue: 0 },
+  updated_by: { type: DataTypes.TEXT },
+  updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+}, { timestamps: false, freezeTableName: true });
+
 const BackupSnapshotModel = () => getSequelize().define('backup_snapshots', {
   id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
@@ -143,6 +151,7 @@ async function initDb() {
       UserSessionModel();
       UserCompanyModel();
       CenterCompanyModel();
+      BudgetLimitModel();
       BackupSnapshotModel();
       WebhookModel();
       await db.sync();
@@ -616,6 +625,174 @@ async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
   return row ? row.toJSON() : null;
 }
 
+function normalizeCompany(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+  if (v === 'jfx') return 'JFX';
+  if (v === 'dmf') return 'DMF';
+  return String(value || '').trim();
+}
+
+function monthKeyToRange(monthKey) {
+  const raw = String(monthKey || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(raw)) return null;
+  const [yy, mm] = raw.split('-').map(Number);
+  if (!yy || !mm || mm < 1 || mm > 12) return null;
+  const start = new Date(Date.UTC(yy, mm - 1, 1));
+  const end = new Date(Date.UTC(yy, mm, 1));
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { monthKey: raw, start: fmt(start), end: fmt(end) };
+}
+
+async function listBudgetLimits(monthKey, companies = null) {
+  const Budget = BudgetLimitModel();
+  const range = monthKeyToRange(monthKey);
+  if (!range) return [];
+  const where = { month_key: range.monthKey };
+  if (Array.isArray(companies) && companies.length) {
+    where.company = { [Op.in]: companies.map(normalizeCompany).filter(Boolean) };
+  }
+  const rows = await Budget.findAll({ where });
+  return rows.map(r => r.toJSON());
+}
+
+async function upsertBudgetLimits(monthKey, budgets, updatedBy = null) {
+  const Budget = BudgetLimitModel();
+  const range = monthKeyToRange(monthKey);
+  if (!range) return 0;
+  const items = budgets && typeof budgets === 'object' ? budgets : {};
+  let count = 0;
+  for (const [companyRaw, valueRaw] of Object.entries(items)) {
+    const company = normalizeCompany(companyRaw);
+    if (!company) continue;
+    const limitValue = Number(valueRaw || 0);
+    if (!Number.isFinite(limitValue) || limitValue < 0) continue;
+    await Budget.upsert({
+      month_key: range.monthKey,
+      company,
+      limit_value: limitValue,
+      updated_by: updatedBy || null,
+      updated_at: new Date(),
+    });
+    count += 1;
+  }
+  return count;
+}
+
+async function getMonthlyReport({ monthKey, companies }) {
+  const db = getSequelize();
+  const range = monthKeyToRange(monthKey);
+  if (!range) {
+    return {
+      totals_by_company: {},
+      grand_total: 0,
+      top_cost_centers: [],
+      counts: { total: 0, signed: 0, pending: 0 },
+    };
+  }
+
+  const allowedCompanies = (Array.isArray(companies) ? companies : [])
+    .map(normalizeCompany)
+    .filter(Boolean);
+  const includeNullForDMF = allowedCompanies.includes('DMF');
+
+  const commonWhere = `
+    (company = ANY(:companies) OR (:includeNullForDMF = true AND company IS NULL))
+  `;
+
+  const parsedDateExpr = `
+    CASE
+      WHEN data ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(data, 'YYYY-MM-DD')
+      WHEN data ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(data, 'DD/MM/YYYY')
+      WHEN data ~ '^\\d{4}-\\d{2}$' THEN to_date(data || '-01', 'YYYY-MM-DD')
+      ELSE NULL
+    END
+  `;
+
+  const baseCte = `
+    WITH scoped AS (
+      SELECT
+        COALESCE(NULLIF(TRIM(company), ''), 'DMF') AS company_norm,
+        NULLIF(TRIM(centro), '') AS centro_norm,
+        ABS(COALESCE(valor, 0))::double precision AS valor_abs,
+        assinatura,
+        ${parsedDateExpr} AS pay_date
+      FROM flow_payments
+      WHERE ${commonWhere}
+    ),
+    filtered AS (
+      SELECT * FROM scoped
+      WHERE pay_date IS NOT NULL
+        AND pay_date >= :start::date
+        AND pay_date < :end::date
+    )
+  `;
+
+  const replacements = {
+    companies: allowedCompanies,
+    includeNullForDMF,
+    start: range.start,
+    end: range.end,
+  };
+
+  const totalsRows = await db.query(
+    `${baseCte}
+     SELECT company_norm AS company, SUM(valor_abs)::double precision AS total
+     FROM filtered
+     GROUP BY company_norm
+     ORDER BY company_norm ASC`,
+    { replacements, type: Sequelize.QueryTypes.SELECT }
+  );
+
+  const countsRows = await db.query(
+    `${baseCte}
+     SELECT
+       COUNT(*)::bigint AS total,
+       SUM(CASE WHEN assinatura IS NOT NULL THEN 1 ELSE 0 END)::bigint AS signed,
+       SUM(CASE WHEN assinatura IS NULL THEN 1 ELSE 0 END)::bigint AS pending
+     FROM filtered`,
+    { replacements, type: Sequelize.QueryTypes.SELECT }
+  );
+
+  const topCentersRows = await db.query(
+    `${baseCte}
+     SELECT COALESCE(centro_norm, 'Sem centro') AS center, SUM(valor_abs)::double precision AS total
+     FROM filtered
+     GROUP BY COALESCE(centro_norm, 'Sem centro')
+     ORDER BY SUM(valor_abs) DESC
+     LIMIT 8`,
+    { replacements, type: Sequelize.QueryTypes.SELECT }
+  );
+
+  const totalsByCompany = {};
+  let grandTotal = 0;
+  for (const row of totalsRows || []) {
+    const company = normalizeCompany(row.company) || row.company;
+    const total = Number(row.total || 0) || 0;
+    totalsByCompany[company] = total;
+    grandTotal += total;
+  }
+
+  const countsRaw = Array.isArray(countsRows) && countsRows[0] ? countsRows[0] : {};
+  const counts = {
+    total: Number(countsRaw.total || 0) || 0,
+    signed: Number(countsRaw.signed || 0) || 0,
+    pending: Number(countsRaw.pending || 0) || 0,
+  };
+
+  const topCostCenters = (topCentersRows || []).map((r) => ({
+    center: String(r.center || 'Sem centro'),
+    total: Number(r.total || 0) || 0,
+  }));
+
+  return {
+    totals_by_company: totalsByCompany,
+    grand_total: grandTotal,
+    top_cost_centers: topCostCenters,
+    counts,
+  };
+}
+
 async function validateDbSchema() {
   if (!dbReady) {
     return { ok: false, reason: 'db_not_ready', missing: [] };
@@ -774,6 +951,7 @@ module.exports = {
   updateFlowPayment,
   getFlowPaymentById,
   signFlowPaymentIfUnsigned,
+  getMonthlyReport,
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
@@ -783,6 +961,8 @@ module.exports = {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
+  listBudgetLimits,
+  upsertBudgetLimits,
   insertBackupSnapshot,
   listBackupSnapshots,
   insertLoginAudit,

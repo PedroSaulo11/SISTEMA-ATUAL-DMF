@@ -1223,6 +1223,14 @@ tr:hover { background: #f8fbff; }
     border-bottom: none;
 }
 
+.report-item-total {
+    padding: 8px 10px;
+    margin: 4px 0 8px;
+    border-radius: 10px;
+    background: rgba(10, 102, 194, 0.08);
+    border: 1px solid rgba(10, 102, 194, 0.18);
+}
+
 .budget-section {
     margin-top: 16px;
 }

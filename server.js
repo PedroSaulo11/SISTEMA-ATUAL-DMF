@@ -36,6 +36,7 @@ const {
   updateFlowPayment,
   getFlowPaymentById,
   signFlowPaymentIfUnsigned,
+  getMonthlyReport,
   listFlowArchives,
   createFlowArchive,
   deleteFlowArchive,
@@ -45,6 +46,8 @@ const {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
+  listBudgetLimits,
+  upsertBudgetLimits,
   insertBackupSnapshot,
   listBackupSnapshots,
   insertLoginAudit,
@@ -2241,6 +2244,94 @@ app.get('/api/health', async (req, res) => {
 app.get('/api/companies', authenticateToken, authorizeRole('user'), (req, res) => {
   // Used by the UI to list/select companies safely.
   res.json({ companies: DEFAULT_COMPANIES_UNIQUE });
+});
+
+app.get('/api/reports/monthly', authenticateToken, authorizeRole('user'), async (req, res) => {
+  const monthKey = String(req.query.month || req.query.monthKey || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+    return res.status(400).json({ error: 'Invalid month. Use YYYY-MM.' });
+  }
+
+  try {
+    // Always cap to the allow-list, even for admins.
+    let companies = DEFAULT_COMPANIES_UNIQUE;
+    if (ENFORCE_COMPANY_ACCESS && isDbReady() && normalizeRole(req.user?.role) !== 'admin') {
+      const resolved = await resolveCompanyAccess(req.user?.id, req.user?.role);
+      if (Array.isArray(resolved) && resolved.length) {
+        companies = resolved;
+      } else if (!ALLOW_ALL_COMPANIES_WHEN_UNSET) {
+        return res.status(403).json({ error: 'Company access not configured' });
+      }
+    }
+
+    companies = (companies || []).map(normalizeCompany).filter((c) => c && isAllowedCompany(c));
+    if (!companies.length) {
+      return res.status(403).json({ error: 'No companies allowed' });
+    }
+
+    const report = await getMonthlyReport({ monthKey, companies });
+    const budgetRows = await listBudgetLimits(monthKey, companies);
+    const budgets = (budgetRows || []).reduce((acc, row) => {
+      const company = normalizeCompany(row.company);
+      if (!company) return acc;
+      acc[company] = Number(row.limit_value || 0) || 0;
+      return acc;
+    }, {});
+
+    // Ensure stable keys for the known companies (even if 0).
+    DEFAULT_COMPANIES_UNIQUE.forEach((c) => {
+      if (!Object.prototype.hasOwnProperty.call(report.totals_by_company || {}, c)) {
+        report.totals_by_company[c] = 0;
+      }
+      if (!Object.prototype.hasOwnProperty.call(budgets, c)) {
+        budgets[c] = 0;
+      }
+    });
+
+    return res.json({
+      month: monthKey,
+      companies,
+      report,
+      budgets,
+    });
+  } catch (error) {
+    logger.error('Monthly report failed', { error: error.message });
+    return res.status(500).json({ error: 'Failed to generate report' });
+  }
+});
+
+app.put('/api/budgets', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), criticalLimiter, async (req, res) => {
+  const monthKey = String(req.query.month || req.body?.month || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+    return res.status(400).json({ error: 'Invalid month. Use YYYY-MM.' });
+  }
+  const budgets = req.body?.budgets && typeof req.body.budgets === 'object' ? req.body.budgets : null;
+  if (!budgets) {
+    return res.status(400).json({ error: 'budgets object required' });
+  }
+
+  // Only allow writing the known allow-list companies.
+  const filtered = {};
+  for (const [k, v] of Object.entries(budgets)) {
+    const company = normalizeCompany(k);
+    if (!company || !isAllowedCompany(company)) continue;
+    const n = Number(v || 0);
+    if (!Number.isFinite(n) || n < 0) continue;
+    filtered[company] = n;
+  }
+
+  try {
+    const count = await upsertBudgetLimits(monthKey, filtered, req.user?.username || null);
+    await recordAuditEvent(req, 'BUDGETS_UPDATED', `Orcamentos atualizados para ${monthKey}.`, {
+      month: monthKey,
+      companies: Object.keys(filtered),
+      count
+    });
+    return res.json({ status: 'ok', updated: count });
+  } catch (error) {
+    logger.error('Failed to save budgets', { error: error.message });
+    return res.status(500).json({ error: 'Failed to save budgets' });
+  }
 });
 
 // Admin: list roles
