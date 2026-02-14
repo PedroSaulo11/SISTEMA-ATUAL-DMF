@@ -1807,10 +1807,12 @@ class UIManager {
                 this.renderCompanyTotals();
                 this.renderCenterCompanyEditor();
             });
+        }).finally(() => {
+            // Avoid racing two simultaneous loadFromBackend() calls right after login.
+            this.startDashboardSummaryAutoRefresh();
         });
         this.startBackendStatusMonitor();
         this.startSessionMonitor();
-        this.startDashboardSummaryAutoRefresh();
         this.renderAdminContent();
         this.applyRolePermissions();
         this.populateBudgetInputs();
