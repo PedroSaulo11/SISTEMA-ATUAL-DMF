@@ -1509,6 +1509,8 @@ class UIManager {
         this.flowStreamReconnectTimer = null;
         this.flowStreamReconnectMs = 2000;
         this.dashboardSyncTimer = null;
+        this.dashboardSyncIntervalMs = 15000;
+        this.dashboardNextSyncAt = null;
         this.pendingCenterCompanyUpdates = new Map();
     }
 
@@ -1912,6 +1914,7 @@ class UIManager {
         const refresh = () => {
             const currentView = document.querySelector('.view:not(.hidden)')?.id;
             if (currentView === 'payments') return;
+            this.dashboardNextSyncAt = Date.now() + this.dashboardSyncIntervalMs;
             this.core.data.loadFromBackend(true, this.core.data.currentCompany).then((ok) => {
                 if (!ok) return;
                 this.updateStats();
@@ -1921,7 +1924,8 @@ class UIManager {
         };
 
         refresh();
-        this.dashboardSyncTimer = setInterval(refresh, 15000);
+        this.dashboardNextSyncAt = Date.now() + this.dashboardSyncIntervalMs;
+        this.dashboardSyncTimer = setInterval(refresh, this.dashboardSyncIntervalMs);
     }
 
     stopDashboardSummaryAutoRefresh() {
@@ -1929,6 +1933,7 @@ class UIManager {
             clearInterval(this.dashboardSyncTimer);
             this.dashboardSyncTimer = null;
         }
+        this.dashboardNextSyncAt = null;
     }
 
     applyInitialRouteFromUrl() {
@@ -2023,8 +2028,10 @@ class UIManager {
 
             const syncEl = document.getElementById('syncCountdown');
             if (syncEl) {
-                if (this.flowNextSyncAt) {
-                    const remainingMs = Math.max(this.flowNextSyncAt - Date.now(), 0);
+                const currentView = document.querySelector('.view:not(.hidden)')?.id;
+                const nextAt = (currentView === 'payments' ? this.flowNextSyncAt : this.dashboardNextSyncAt) || null;
+                if (nextAt) {
+                    const remainingMs = Math.max(nextAt - Date.now(), 0);
                     const syncMinutes = Math.floor(remainingMs / 60000);
                     const syncSeconds = Math.floor((remainingMs % 60000) / 1000);
                     const mm = String(syncMinutes).padStart(2, '0');
