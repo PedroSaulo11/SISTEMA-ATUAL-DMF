@@ -1831,6 +1831,7 @@ class UIManager {
 
     async loadInitialDashboardData() {
         let company = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+        let hadUserPersistedCompany = false;
         try {
             // Prefer per-user last company to avoid cross-user localStorage bleed.
             const raw = this.core?.currentUser?.id || this.core?.currentUser?.email || this.core?.currentUser?.username || null;
@@ -1838,23 +1839,35 @@ class UIManager {
                 const safe = String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
                 const k = `dmf_current_company_${safe}`;
                 const persisted = localStorage.getItem(k);
-                if (persisted) company = this.normalizeCompany(persisted);
+                if (persisted) {
+                    company = this.normalizeCompany(persisted);
+                    hadUserPersistedCompany = true;
+                }
             }
         } catch (_) {}
         this.core.data.setCurrentCompany(company);
         this.setCompanyFilter(company);
 
         const primaryOk = await this.core.data.loadFromBackend(true, company);
-        if (primaryOk) return true;
+        if (primaryOk) {
+            // If this company has no data and the user did not explicitly choose/persist it yet,
+            // try to auto-select another company that has payments to avoid a "blank" dashboard.
+            const hasData = Array.isArray(this.core?.data?.records) && this.core.data.records.length > 0;
+            if (hasData) return true;
+            if (hadUserPersistedCompany) return true;
+        }
 
         // UI-based fallback (buttons) can be hidden depending on role; prefer backend source of truth.
         let fallbackCompany = null;
+        let companiesList = [];
         try {
             const resp = await fetch(`${getApiBase()}/api/companies`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
             if (resp.ok) {
                 const data = await resp.json().catch(() => ({}));
                 const list = Array.isArray(data?.companies) ? data.companies : [];
-                fallbackCompany = list.find(c => this.normalizeCompany(c) !== company) || list[0] || null;
+                companiesList = list.map(c => this.normalizeCompany(c)).filter(Boolean);
+                companiesList = Array.from(new Set(companiesList));
+                fallbackCompany = companiesList.find(c => c !== company) || companiesList[0] || null;
             }
         } catch (_) {}
 
@@ -1862,10 +1875,31 @@ class UIManager {
             const fallbackButton = this.getFirstAvailableCompanyButton();
             fallbackCompany = fallbackButton?.getAttribute('data-company') || null;
         }
-        if (!fallbackCompany) return false;
+        if (!fallbackCompany) return primaryOk;
 
         const normalizedFallback = this.normalizeCompany(fallbackCompany);
-        if (!normalizedFallback || normalizedFallback === company) return false;
+        if (!normalizedFallback || normalizedFallback === company) return primaryOk;
+
+        // If initial load was "ok but empty", try all companies (small allow-list) to find one with data.
+        if (primaryOk && !hadUserPersistedCompany) {
+            if (!companiesList.length) {
+                companiesList = [company, normalizedFallback].map(c => this.normalizeCompany(c)).filter(Boolean);
+                companiesList = Array.from(new Set(companiesList));
+            }
+            for (const c of companiesList) {
+                if (!c || c === company) continue;
+                this.core.data.setCurrentCompany(c);
+                this.setCompanyFilter(c);
+                const ok = await this.core.data.loadFromBackend(true, c);
+                if (ok && Array.isArray(this.core?.data?.records) && this.core.data.records.length > 0) {
+                    return true;
+                }
+            }
+            // Keep the original company if none had data.
+            this.core.data.setCurrentCompany(company);
+            this.setCompanyFilter(company);
+            return true;
+        }
 
         this.core.data.setCurrentCompany(normalizedFallback);
         this.setCompanyFilter(normalizedFallback);
