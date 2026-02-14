@@ -133,6 +133,11 @@ const DEFAULT_ROLE_PERMISSIONS = {
 let roleCache = { data: {}, loadedAt: 0 };
 const ENFORCE_COMPANY_ACCESS = process.env.ENFORCE_COMPANY_ACCESS === 'true';
 const ALLOW_ALL_COMPANIES_WHEN_UNSET = process.env.ALLOW_ALL_COMPANIES_WHEN_UNSET !== 'false';
+const DEFAULT_COMPANIES = String(process.env.DEFAULT_COMPANIES || 'DMF,JFX,Real Energy')
+  .split(',')
+  .map(s => normalizeCompany(s))
+  .filter(Boolean);
+const DEFAULT_COMPANIES_UNIQUE = Array.from(new Set(DEFAULT_COMPANIES));
 const TOKEN_CACHE_TTL_MS = Number(process.env.TOKEN_CACHE_TTL_MS || 30000);
 let lastTokenLoadAt = 0;
 const CRON_SECRET = process.env.CRON_SECRET || '';
@@ -174,7 +179,11 @@ async function resolveCompanyAccess(userId, role) {
   if (!isDbReady()) return null;
   if (normalizeRole(role) === 'admin') return null;
   const companies = await listUserCompanies(userId);
-  return companies || [];
+  if (companies && companies.length) return companies;
+  // If user access wasn't configured, fall back to a fixed default list
+  // (prevents "company" query param from becoming an unbounded tenant selector).
+  if (DEFAULT_COMPANIES_UNIQUE.length) return DEFAULT_COMPANIES_UNIQUE;
+  return [];
 }
 
 async function enforceCompanyAccess(req, res, next) {
@@ -206,6 +215,13 @@ async function enforceCompanyAccess(req, res, next) {
     });
     return res.status(403).json({ error: 'Company access denied' });
   }
+  return next();
+}
+
+function requireCompanyParam(req, res, next) {
+  if (!ENFORCE_COMPANY_ACCESS) return next();
+  const company = normalizeCompany(req.query.company || req.body?.company);
+  if (!company) return res.status(400).json({ error: 'Company required' });
   return next();
 }
 
@@ -1397,7 +1413,7 @@ app.get('/api/payments', authenticateToken, authorizeRole('user'), async (req, r
 });
 
 // Shared flow payments storage (local DB)
-app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), enforceCompanyAccess, async (req, res) => {
+app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), requireCompanyParam, enforceCompanyAccess, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
@@ -1411,7 +1427,7 @@ app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), enforceC
   }
 });
 
-app.get('/api/flow-payments/stream', authenticateTokenFromQuery, authorizeRole('user'), enforceCompanyAccess, (req, res) => {
+app.get('/api/flow-payments/stream', authenticateTokenFromQuery, authorizeRole('user'), requireCompanyParam, enforceCompanyAccess, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -1665,7 +1681,7 @@ app.patch(
 );
 
 // Archived flow snapshots
-app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), authorizePermission('view_archives'), enforceCompanyAccess, async (req, res) => {
+app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), authorizePermission('view_archives'), requireCompanyParam, enforceCompanyAccess, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
