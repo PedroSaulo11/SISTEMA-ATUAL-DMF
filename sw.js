@@ -1,7 +1,7 @@
 /* Minimal SW to enable installability.
    Never cache /api/* responses (auth + sensitive). */
 
-const SW_VERSION = '20260215-f2';
+const SW_VERSION = '20260215-f3';
 const CACHE_NAME = `dmf-static-${SW_VERSION}`;
 
 const PRECACHE = [
@@ -84,4 +84,3 @@ self.addEventListener('fetch', (event) => {
     }
   })());
 });
-

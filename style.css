@@ -125,6 +125,7 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     color: white;
     position: fixed;
     height: 100vh;
+    height: 100dvh; /* better on mobile browsers with dynamic bars */
     padding: 32px 24px;
     display: flex;
     flex-direction: column;
@@ -159,6 +160,10 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
 .sidebar-nav {
     margin-top: 40px;
     flex: 1;
+    min-height: 0; /* allow flex child to scroll */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 6px; /* room for scrollbar without shifting */
 }
 
 .btn-side-toggle {
