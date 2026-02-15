@@ -29,6 +29,96 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
 /* --- Layout Estrutural --- */
 .app-wrapper { display: flex; min-height: 100vh; }
 
+.mobile-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 110;
+    height: 56px;
+    padding: 0 14px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    background: linear-gradient(180deg, var(--primary) 0%, var(--primary-dark) 100%);
+    color: #fff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+}
+
+.mobile-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.mobile-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    object-fit: cover;
+}
+
+.mobile-title {
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.icon-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.12);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.icon-btn:active {
+    transform: translateY(1px);
+}
+
+.hamburger {
+    width: 18px;
+    height: 12px;
+    display: inline-block;
+    position: relative;
+}
+
+.hamburger::before,
+.hamburger::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 999px;
+}
+
+.hamburger::before {
+    top: 0;
+    box-shadow: 0 5px 0 rgba(255, 255, 255, 0.95);
+}
+
+.hamburger::after {
+    bottom: 0;
+}
+
+.sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+    z-index: 105;
+}
+
 .sidebar {
     width: var(--sidebar-width);
     background: linear-gradient(180deg, var(--primary) 0%, var(--primary-dark) 100%);
@@ -172,6 +262,62 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     padding: 32px;
     transition: var(--transition);
     background: var(--bg-app);
+}
+
+/* --- Mobile / Responsive --- */
+@media (max-width: 920px) {
+    .mobile-topbar { display: flex; }
+
+    .sidebar {
+        transform: translateX(-102%);
+        width: min(var(--sidebar-width), 86vw);
+        padding: 22px 18px;
+        z-index: 120;
+    }
+
+    .sidebar.is-open {
+        transform: translateX(0);
+    }
+
+    .main-content {
+        margin-left: 0;
+        padding: 18px 14px;
+    }
+
+    .card {
+        padding: 18px;
+        margin-bottom: 18px;
+    }
+
+    .card h2 {
+        font-size: 20px;
+        margin-bottom: 16px;
+    }
+
+    .dashboard-summary {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .summary-actions {
+        width: 100%;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+
+    .summary-actions .btn {
+        flex: 1 1 140px;
+    }
+
+    .data-table-wrapper {
+        -webkit-overflow-scrolling: touch;
+    }
+
+    table {
+        min-width: 820px;
+    }
 }
 
 /* --- Componentes UI --- */

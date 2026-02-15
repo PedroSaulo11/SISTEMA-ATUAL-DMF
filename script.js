@@ -4956,6 +4956,47 @@ function initDomBindings() {
         });
     });
 
+    // Mobile sidebar toggle (off-canvas)
+    (function initMobileSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('sidebarOverlay');
+        const btn = document.getElementById('btnMobileMenu');
+        if (!sidebar || !overlay || !btn) return;
+
+        const close = () => {
+            sidebar.classList.remove('is-open');
+            overlay.classList.add('hidden');
+            overlay.setAttribute('aria-hidden', 'true');
+            btn.setAttribute('aria-expanded', 'false');
+        };
+
+        const open = () => {
+            sidebar.classList.add('is-open');
+            overlay.classList.remove('hidden');
+            overlay.setAttribute('aria-hidden', 'false');
+            btn.setAttribute('aria-expanded', 'true');
+        };
+
+        btn.addEventListener('click', () => {
+            if (sidebar.classList.contains('is-open')) close();
+            else open();
+        });
+        overlay.addEventListener('click', close);
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') close();
+        });
+
+        // Close on navigation tap (mobile)
+        document.querySelectorAll('.sidebar [data-nav]').forEach((navBtn) => {
+            navBtn.addEventListener('click', () => close());
+        });
+
+        // Ensure overlay is closed on wider screens
+        window.addEventListener('resize', () => {
+            if (window.innerWidth > 920) close();
+        });
+    })();
+
     const paymentsToggle = document.getElementById('btnPaymentsToggle');
     const paymentsSubmenu = document.getElementById('paymentsSubmenu');
     const paymentsToggleIcon = document.getElementById('paymentsToggleIcon');

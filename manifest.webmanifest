@@ -1,0 +1,22 @@
+{
+  "name": "DMF Fluxo",
+  "short_name": "DMF Fluxo",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0052cc",
+  "icons": [
+    {
+      "src": "/assets/logo-dmf.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/logo-dmf.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+

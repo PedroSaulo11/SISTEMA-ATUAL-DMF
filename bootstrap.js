@@ -29,6 +29,15 @@
         const assistant = document.createElement('script');
         assistant.src = 'assistant.js?v=' + encodeURIComponent(ASSET_VERSION);
         document.body.appendChild(assistant);
+
+        // PWA installability: minimal service worker (no API caching).
+        if ('serviceWorker' in navigator) {
+            try {
+                await navigator.serviceWorker.register('/sw.js?v=' + encodeURIComponent(ASSET_VERSION));
+            } catch (_) {
+                // ignore SW registration errors; app must still work normally.
+            }
+        }
     } catch (error) {
         console.error('Erro ao carregar a interface:', error);
         const app = document.getElementById('appSection');

@@ -474,7 +474,9 @@ const PUBLIC_FILES = new Set([
   'assistant.css',
   'verify.html',
   'verify.js',
-  'verify.css'
+  'verify.css',
+  'manifest.webmanifest',
+  'sw.js'
 ]);
 
 // Boot gating:
