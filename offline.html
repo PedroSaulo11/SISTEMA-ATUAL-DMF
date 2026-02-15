@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DMF Fluxo - Offline</title>
+  <link rel="icon" href="/favicon.ico">
+  <style>
+    :root { --primary:#0052cc; --bg:#0b1220; --card:#0f172a; --text:#e5e7eb; --muted:#94a3b8; }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+      background: radial-gradient(900px 420px at 20% 0%, rgba(0,82,204,0.35), transparent 60%),
+                  radial-gradient(900px 420px at 80% 100%, rgba(0,161,224,0.25), transparent 60%),
+                  var(--bg);
+      color:var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      padding: 18px;
+    }
+    .card{
+      width:min(560px, 100%);
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 18px;
+      padding: 20px 18px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+    }
+    .title{ font-weight: 900; letter-spacing: 0.03em; margin: 0 0 6px 0; font-size: 18px; }
+    .desc{ margin: 0 0 16px 0; color: var(--muted); line-height: 1.45; font-size: 13px; }
+    .row{ display:flex; gap: 10px; flex-wrap: wrap; }
+    .btn{
+      appearance:none; border:0; cursor:pointer;
+      padding: 12px 14px; border-radius: 12px;
+      font-weight: 800; letter-spacing: 0.02em;
+      background: var(--primary); color:#fff;
+      box-shadow: 0 10px 22px rgba(0,82,204,0.28);
+      flex: 1 1 180px;
+    }
+    .btn.secondary{
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.16);
+      box-shadow: none;
+    }
+    .hint{ margin-top: 14px; font-size: 12px; color: rgba(229,231,235,0.75); }
+    code{ background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 class="title">Você está offline</h1>
+    <p class="desc">
+      O app carregou, mas não foi possível acessar o servidor agora. Quando a internet voltar, tente novamente.
+    </p>
+    <div class="row">
+      <button class="btn" onclick="location.href='/'">Tentar novamente</button>
+      <button class="btn secondary" onclick="history.back()">Voltar</button>
+    </div>
+    <div class="hint">
+      Dica: se o app estiver instalado, às vezes um <code>fechar e abrir</code> resolve mais rápido.
+    </div>
+  </div>
+</body>
+</html>
+

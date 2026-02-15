@@ -475,6 +475,7 @@ const PUBLIC_FILES = new Set([
   'verify.html',
   'verify.js',
   'verify.css',
+  'offline.html',
   'manifest.webmanifest',
   'sw.js'
 ]);

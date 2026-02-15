@@ -7,15 +7,11 @@
     <link rel="icon" href="/favicon.ico">
     <link rel="icon" type="image/png" href="/assets/logo-dmf.png">
     <link rel="apple-touch-icon" href="/assets/logo-dmf.png">
-    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f4">
+    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f5">
     <meta name="theme-color" content="#0052cc">
-    <link rel="stylesheet" href="style.css?v=20260215-f4">
+    <link rel="stylesheet" href="style.css?v=20260215-f5">
     <link rel="stylesheet" href="assistant.css?v=20260215-f1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
@@ -26,6 +22,10 @@
     <div class="mobile-brand" aria-label="DMF Fluxo">
         <img class="mobile-logo" src="/assets/logo-dmf.png" alt="DMF">
         <span class="mobile-title">DMF FLUXO</span>
+    </div>
+    <div class="mobile-view">
+        <span id="mobileViewTitle" class="mobile-view-title">Dashboard</span>
+        <span id="mobileNetBadge" class="mobile-net-badge hidden" aria-live="polite">Offline</span>
     </div>
 </header>
 <div id="sidebarOverlay" class="sidebar-overlay hidden" aria-hidden="true"></div>
@@ -364,6 +364,6 @@
   </div>
 </div>
 
-<script src="bootstrap.js?v=20260215-f4"></script>
+<script src="bootstrap.js?v=20260215-f5"></script>
 </body>
 </html>

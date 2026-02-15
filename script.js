@@ -105,6 +105,46 @@ function showToast(message, type = 'info', ttl = 3500) {
     }, ttl);
 }
 
+// --- Lazy loaders for heavy libraries (PWA performance) ---
+function loadScriptOnce(src, { timeoutMs = 20000 } = {}) {
+    window.__DMF_LOADED_SCRIPTS = window.__DMF_LOADED_SCRIPTS || new Map();
+    const cache = window.__DMF_LOADED_SCRIPTS;
+    if (cache.has(src)) return cache.get(src);
+
+    const p = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        const t = setTimeout(() => {
+            try { s.remove(); } catch (_) {}
+            reject(new Error('Script timeout'));
+        }, timeoutMs);
+        s.onload = () => { clearTimeout(t); resolve(true); };
+        s.onerror = () => { clearTimeout(t); reject(new Error('Script load error')); };
+        document.head.appendChild(s);
+    });
+    cache.set(src, p);
+    return p;
+}
+
+async function ensureChartJs() {
+    if (window.Chart) return true;
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/chart.js', { timeoutMs: 20000 });
+    return !!window.Chart;
+}
+
+async function ensureXlsx() {
+    if (window.XLSX) return true;
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', { timeoutMs: 25000 });
+    return !!window.XLSX;
+}
+
+async function ensureLeaflet() {
+    if (window.L && typeof window.L.map === 'function') return true;
+    await loadScriptOnce('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', { timeoutMs: 25000 });
+    return !!(window.L && typeof window.L.map === 'function');
+}
+
 function parseJwtPayload(token) {
     try {
         const payload = token.split('.')[1];
@@ -701,12 +741,21 @@ class DataProcessor {
         }
     }
 
-    exportArchive(archive) {
+    async exportArchive(archive) {
         if (!archive) return;
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_archives') &&
             !this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
             alert('Você não tem permissão para exportar fluxos anteriores.');
             return;
+        }
+        if (!window.XLSX) {
+            showToast('Carregando exportador...', 'info');
+            try {
+                await ensureXlsx();
+            } catch (_) {
+                alert('Não foi possível carregar o exportador (XLSX). Tente novamente.');
+                return;
+            }
         }
         const payments = Array.isArray(archive.payments) ? archive.payments : [];
         const header = [
@@ -741,11 +790,21 @@ class DataProcessor {
         XLSX.writeFile(wb, `${safeLabel}.xlsx`);
     }
 
-    import(input) {
+    async import(input) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'import_payments')) {
             alert('Você não tem permissão para importar o fluxo de pagamentos.');
             input.value = '';
             return;
+        }
+        if (!window.XLSX) {
+            showToast('Carregando importador...', 'info');
+            try {
+                await ensureXlsx();
+            } catch (_) {
+                alert('Não foi possível carregar o importador (XLSX). Tente novamente.');
+                input.value = '';
+                return;
+            }
         }
         const file = input.files[0];
         if (!file) {
@@ -999,10 +1058,19 @@ class DataProcessor {
         return totalsByCompany;
     }
     
-    export(companyFilter = null) {
+    async export(companyFilter = null) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
             alert('Você não tem permissão para exportar o fluxo de pagamentos.');
             return;
+        }
+        if (!window.XLSX) {
+            showToast('Carregando exportador...', 'info');
+            try {
+                await ensureXlsx();
+            } catch (_) {
+                alert('Não foi possível carregar o exportador (XLSX). Tente novamente.');
+                return;
+            }
         }
         const maxExportRows = 2000;
         const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
@@ -1566,6 +1634,13 @@ class UIManager {
     }
 
     navigate(viewId, activeButton = null) {
+        // Router options can be passed as 3rd argument (back/forward handling).
+        const opts = arguments.length >= 3 && arguments[2] && typeof arguments[2] === 'object'
+            ? arguments[2]
+            : {};
+        const pushRoute = opts.pushRoute !== false;
+        const replaceRoute = !!opts.replaceRoute;
+
         if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             this.showAccessDenied({
                 title: 'Acesso negado',
@@ -1585,6 +1660,15 @@ class UIManager {
         // Update active button
         document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
+
+        const company = viewId === 'payments'
+            ? this.normalizeCompany(activeButton?.getAttribute?.('data-company') || this.core?.data?.currentCompany || this.companyFilter || 'DMF')
+            : null;
+
+        this.updateTopbarTitle(viewId, company);
+        if (pushRoute) {
+            this.setRoute(viewId, company, { replace: replaceRoute });
+        }
 
         // Special handling for Cobli tab
         if (viewId === 'cobli') {
@@ -1616,6 +1700,127 @@ class UIManager {
                 });
             }
         }
+    }
+
+    safeUserKey() {
+        const raw = this.core?.currentUser?.id || this.core?.currentUser?.email || this.core?.currentUser?.username || null;
+        if (!raw) return null;
+        return String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
+    }
+
+    setRoute(tab, company = null, { replace = false } = {}) {
+        try {
+            const t = String(tab || '').trim();
+            if (!t) return;
+            const params = new URLSearchParams();
+            params.set('tab', t);
+            if (t === 'payments') {
+                const c = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+                if (c) params.set('company', c);
+            }
+            const nextUrl = `/?${params.toString()}`;
+            const state = { tab: t, company: params.get('company') || null };
+            if (replace) history.replaceState(state, '', nextUrl);
+            else history.pushState(state, '', nextUrl);
+
+            const k = this.safeUserKey();
+            if (k) {
+                localStorage.setItem(`dmf_last_route_${k}`, JSON.stringify(state));
+            }
+        } catch (_) {}
+    }
+
+    initRouterOnce() {
+        if (this.routerBound) return;
+        this.routerBound = true;
+        window.addEventListener('popstate', (e) => {
+            const state = e.state || null;
+            const tab = state?.tab || null;
+            const company = state?.company || null;
+            if (tab) {
+                this.navigateFromRoute(tab, company);
+                return;
+            }
+            // Fallback to parsing URL if state is missing (e.g., direct load / refresh).
+            this.applyInitialRouteFromUrl({ replace: true });
+        });
+    }
+
+    navigateFromRoute(tab, company = null) {
+        const t = String(tab || '').trim().toLowerCase();
+        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli', 'accessdenied']);
+        if (!allowed.has(t)) return;
+        const viewId = t === 'accessdenied' ? 'accessDenied' : t;
+        if (t === 'payments') {
+            const c = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+            const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
+            const targetButton = allPaymentButtons.find(btn =>
+                this.normalizeCompany(btn.getAttribute('data-company')) === c
+            ) || allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
+            this.navigate('payments', targetButton || null, { pushRoute: false });
+            return;
+        }
+        const btn = document.querySelector(`[data-nav="${t}"]`);
+        this.navigate(viewId, btn || null, { pushRoute: false });
+    }
+
+    applyInitialRouteFromUrl(opts = {}) {
+        const params = new URLSearchParams(window.location.search || '');
+        const tab = String(params.get('tab') || '').trim().toLowerCase();
+        const company = String(params.get('company') || '').trim();
+        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli', 'accessdenied']);
+
+        let t = tab && allowed.has(tab) ? tab : null;
+        let c = company || null;
+
+        if (!t) {
+            // Per-user last route (helps PWA resume where user left off).
+            try {
+                const k = this.safeUserKey();
+                if (k) {
+                    const raw = localStorage.getItem(`dmf_last_route_${k}`);
+                    const parsed = raw ? JSON.parse(raw) : null;
+                    if (parsed?.tab && allowed.has(String(parsed.tab).toLowerCase())) {
+                        t = String(parsed.tab).toLowerCase();
+                        c = parsed.company || null;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (!t) {
+            t = 'dashboard';
+        }
+
+        // Sync URL state once on boot, then navigate without pushing again.
+        if (opts.replace) {
+            this.setRoute(t, c, { replace: true });
+        }
+        this.navigateFromRoute(t, c);
+    }
+
+    updateTopbarTitle(viewId, company = null) {
+        const title = document.getElementById('mobileViewTitle');
+        if (!title) return;
+        const vRaw = String(viewId || '').trim();
+        const v = vRaw.toLowerCase();
+        if (v === 'payments') {
+            title.textContent = `Fluxo • ${this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF')}`;
+            return;
+        }
+        const labels = {
+            dashboard: 'Dashboard',
+            audit: 'Auditoria',
+            admin: 'Administração',
+            assistente: 'Assistente',
+            cobli: 'Cobli',
+            accessdenied: 'Acesso negado'
+        };
+        if (v === 'accessdenied') {
+            title.textContent = 'Acesso negado';
+            return;
+        }
+        title.textContent = labels[v] || 'DMF Fluxo';
     }
 
     showLogin() {
@@ -1878,7 +2083,8 @@ class UIManager {
         this.initPaymentsFilters();
         this.initAuditFilters();
         this.syncCurrentUserRole();
-        this.applyInitialRouteFromUrl();
+        this.initRouterOnce();
+        this.applyInitialRouteFromUrl({ replace: true });
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
     }
 
@@ -1992,49 +2198,51 @@ class UIManager {
         this.dashboardNextSyncAt = null;
     }
 
-    applyInitialRouteFromUrl() {
-        const params = new URLSearchParams(window.location.search || '');
-        const tab = String(params.get('tab') || '').trim().toLowerCase();
-        if (!tab) return;
-
-        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli']);
-        if (!allowed.has(tab)) return;
-
-        if (tab === 'payments') {
-            const companyRaw = String(params.get('company') || '').trim();
-            const company = this.normalizeCompany(companyRaw || this.companyFilter || 'DMF');
-            const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
-            let targetButton = allPaymentButtons.find(btn =>
-                this.normalizeCompany(btn.getAttribute('data-company')) === company
-            );
-            if (!targetButton) {
-                targetButton = allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
-            }
-            this.navigate('payments', targetButton || null);
-            return;
-        }
-
-        const btn = document.querySelector(`[data-nav="${tab}"]`);
-        this.navigate(tab, btn || null);
-    }
-
     startBackendStatusMonitor() {
         if (this.backendStatusTimer) return;
+        const badge = document.getElementById('mobileNetBadge');
+        const setBadge = (isOffline, text = 'Offline') => {
+            if (!badge) return;
+            badge.textContent = text;
+            badge.classList.toggle('hidden', !isOffline);
+            badge.classList.toggle('is-offline', isOffline);
+        };
+
+        const netListener = () => {
+            if (navigator.onLine === false) {
+                setBadge(true, 'Offline');
+            } else {
+                setBadge(false);
+            }
+        };
+        window.addEventListener('online', netListener);
+        window.addEventListener('offline', netListener);
+        netListener();
+
         const check = async () => {
             try {
+                if (navigator.onLine === false) {
+                    setBackendStatus('Servidor: sem internet', 'error');
+                    setBadge(true, 'Offline');
+                    return;
+                }
                 const response = await fetch(`${getApiBase()}/api/health`, { method: 'GET', cache: 'no-store' });
                 if (!response.ok) {
                     setBackendStatus('Servidor: indisponível', 'error');
+                    setBadge(true, 'Offline');
                     return;
                 }
                 const data = await response.json();
                 if (data && data.db_ready === false) {
                     setBackendStatus(`Servidor: online (banco iniciando)`, 'warn');
+                    setBadge(false);
                     return;
                 }
                 setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
+                setBadge(false);
             } catch (_) {
                 setBackendStatus('Servidor: indisponível', 'error');
+                setBadge(true, 'Offline');
             }
         };
         check();
@@ -3782,6 +3990,17 @@ getArchiveFilterState() {
     initCharts() {
         const canvas = document.getElementById('financeChart');
         if (!canvas) return;
+        if (!window.Chart) {
+            // Lazy-load Chart.js for faster app boot on PWA.
+            showToast('Carregando gráficos...', 'info', 1800);
+            ensureChartJs().then(() => {
+                // Re-run once loaded.
+                this.initCharts();
+            }).catch(() => {
+                // Keep dashboard usable even if chart lib fails.
+            });
+            return;
+        }
         const ctx = canvas.getContext('2d');
         if (this.financeChart) {
             this.financeChart.destroy();
@@ -4819,6 +5038,14 @@ class CobliManager {
 
         const mapContainer = document.getElementById('mapContainer');
         if (!mapContainer) return;
+
+        if (!(window.L && typeof window.L.map === 'function')) {
+            showToast('Carregando mapa...', 'info', 1800);
+            ensureLeaflet().then(() => {
+                this.initMap();
+            }).catch(() => {});
+            return;
+        }
 
         // Initialize Leaflet map centered on Brazil
         this.map = L.map('mapContainer').setView([-15.7801, -47.9292], 4);
