@@ -510,6 +510,12 @@ app.use((req, res, next) => {
 
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// Explicit favicon route (App Engine won't serve arbitrary root files unless we do).
+app.get('/favicon.ico', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.sendFile(path.join(__dirname, 'favicon.ico'));
+});
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
