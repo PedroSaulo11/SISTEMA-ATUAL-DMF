@@ -46,6 +46,9 @@ const {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
+  listCostCenters,
+  upsertCostCenter,
+  bulkUpsertCostCenters,
   listBudgetLimits,
   upsertBudgetLimits,
   insertBackupSnapshot,
@@ -1519,6 +1522,19 @@ app.post(
       });
     }
     const normalized = Array.from(dedup.values());
+
+    // Record identified cost centers in backend registry (best-effort).
+    try {
+      const centers = Array.from(new Set(
+        normalized.map(p => String(p.centro || '').trim()).filter(Boolean)
+      ));
+      if (centers.length) {
+        await bulkUpsertCostCenters(centers.map(c => ({ center_label: c, company })));
+      }
+    } catch (error) {
+      logger.warn('Failed to record cost centers from import', { error: error.message });
+    }
+
     await replaceFlowPayments(normalized, company);
     await recordAuditEvent(req, normalized.length ? 'FLOW_IMPORT' : 'FLOW_CLEAR', `Fluxo ${company} importado (${normalized.length} registros).`, {
       company,
@@ -1619,6 +1635,17 @@ app.post(
     await upsertFlowPayment(payment);
       saved = payment;
     }
+
+    // Record identified cost center in backend registry (best-effort).
+    try {
+      const label = String(payment.centro || '').trim();
+      if (label) {
+        await upsertCostCenter(label, company);
+      }
+    } catch (error) {
+      logger.warn('Failed to record cost center from upsert', { error: error.message });
+    }
+
     await recordAuditEvent(req, 'FLOW_UPSERT', `Pagamento ${payment.id} criado/atualizado em ${company}.`, {
       company,
       paymentId: payment.id
@@ -2414,6 +2441,50 @@ app.get('/api/centers/companies', authenticateToken, authorizeRole('user'), asyn
   } catch (error) {
     logger.error('Error listing center companies', { error: error.message });
     res.status(500).json({ error: 'Failed to list center companies' });
+  }
+});
+
+// Cost centers registry: backend source-of-truth (avoid relying on localStorage).
+app.get('/api/cost-centers', authenticateToken, authorizeRole('user'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const search = req.query.search ? String(req.query.search).trim() : null;
+    const limit = Number(req.query.limit || 2000);
+    const items = await listCostCenters({ search, limit });
+    res.json({
+      items: (items || []).map(item => ({
+        center_key: item.center_key,
+        center_label: item.center_label,
+        first_seen_at: item.first_seen_at || null,
+        last_seen_at: item.last_seen_at || null,
+        last_seen_company: item.last_seen_company || null,
+      }))
+    });
+  } catch (error) {
+    logger.error('Error listing cost centers', { error: error.message });
+    res.status(500).json({ error: 'Failed to list cost centers' });
+  }
+});
+
+app.post('/api/cost-centers', authenticateToken, authorizeRole('user'), validateRequest([
+  body('center').notEmpty().withMessage('Center name required'),
+]), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const centerLabel = String(req.body.center || '').trim();
+    const company = req.body.company ? normalizeCompany(req.body.company) : null;
+    if (centerLabel.length > 160) {
+      return res.status(400).json({ error: 'Center name too long' });
+    }
+    const item = await upsertCostCenter(centerLabel, company);
+    res.json({ success: true, item });
+  } catch (error) {
+    logger.error('Error upserting cost center', { error: error.message });
+    res.status(500).json({ error: 'Failed to upsert cost center' });
   }
 });
 

@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS app_center_companies (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS app_cost_centers (
+    center_key TEXT PRIMARY KEY,
+    center_label TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_company TEXT
+);
+
 CREATE TABLE IF NOT EXISTS backup_snapshots (
     id BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

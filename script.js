@@ -1187,6 +1187,8 @@ class DataProcessor {
         window.DMF_CONTEXT.centrosCusto = this.costCenters;
         this.core.audit?.log?.('NOVO CENTRO', `Centro de Custo adicionado: ${n}`, 'centro_de_custo'); // ALTERADO
         try { registrarEvento('centro_novo', this.core.currentUser, `Centro criado: ${n}`, 'centro'); } catch(e){} // ALTERADO
+        // Persist on backend (best-effort) so admin sees all detected centers across devices.
+        this.syncCostCenterToBackend(n).catch(() => {});
         if (!this.getCenterCompanyOverride(n) && !this.pendingCenterAssignments.has(this._key(n))) {
           this.pendingCenterAssignments.add(this._key(n));
           this.core?.ui?.openCenterAssignmentModal?.(n);
@@ -1194,6 +1196,55 @@ class DataProcessor {
       }
       return true;
     } // ALTERADO
+
+    async syncCostCenterToBackend(centerLabel) {
+      const token = localStorage.getItem('dmf_api_token');
+      if (!token) return false;
+      const label = String(centerLabel || '').trim();
+      if (!label) return false;
+      try {
+        const response = await fetch(`${getApiBase()}/api/cost-centers`, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          },
+          body: JSON.stringify({ center: label, company: this.currentCompany })
+        });
+        return response.ok;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async loadCostCentersFromBackend() {
+      const token = localStorage.getItem('dmf_api_token');
+      if (!token) return false;
+      try {
+        const response = await fetch(`${getApiBase()}/api/cost-centers`, {
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          }
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const centers = items
+          .map(i => String(i.center_label || '').trim())
+          .filter(Boolean);
+        if (!centers.length) return true;
+        // Merge into local list (cache) for offline UX.
+        this.costCenters = this._dedupCaseInsensitive([...(this.costCenters || []), ...centers]);
+        localStorage.setItem(this.core.storageKeys.COST_CENTERS, JSON.stringify(this.costCenters));
+        if (window.DMF_CONTEXT) window.DMF_CONTEXT.centrosCusto = this.costCenters;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
 
     getCompanyCenterMap() {
         return {
@@ -1801,6 +1852,11 @@ class UIManager {
         }
 
         this.loadInitialDashboardData().then(() => {
+            // Pull the authoritative cost center registry from backend (across companies/devices).
+            this.core.data.loadCostCentersFromBackend().then(() => {
+                this.populateCostCentersDatalist?.();
+                this.renderCenterCompanyEditor?.();
+            }).catch(() => {});
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();

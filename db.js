@@ -117,6 +117,14 @@ const CenterCompanyModel = () => getSequelize().define('app_center_companies', {
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
+const CostCenterModel = () => getSequelize().define('app_cost_centers', {
+  center_key: { type: DataTypes.TEXT, primaryKey: true },
+  center_label: { type: DataTypes.TEXT, allowNull: false },
+  first_seen_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  last_seen_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  last_seen_company: { type: DataTypes.TEXT },
+}, { timestamps: false, freezeTableName: true });
+
 const BudgetLimitModel = () => getSequelize().define('budget_limits', {
   month_key: { type: DataTypes.TEXT, primaryKey: true }, // YYYY-MM
   company: { type: DataTypes.TEXT, primaryKey: true },
@@ -151,11 +159,13 @@ async function initDb() {
       UserSessionModel();
       UserCompanyModel();
       CenterCompanyModel();
+      CostCenterModel();
       BudgetLimitModel();
       BackupSnapshotModel();
       WebhookModel();
       await db.sync();
       await ensureDefaultRoles();
+      await ensureCostCentersSeeded().catch(() => {});
       dbReady = true;
       return;
     } catch (error) {
@@ -793,6 +803,92 @@ async function getMonthlyReport({ monthKey, companies }) {
   };
 }
 
+function normalizeCenterLabel(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function centerKey(value) {
+  return normalizeCenterLabel(value).toLowerCase();
+}
+
+async function upsertCostCenter(centerLabel, company = null) {
+  const Center = CostCenterModel();
+  const label = normalizeCenterLabel(centerLabel);
+  const key = centerKey(label);
+  if (!label || !key) return null;
+  const now = new Date();
+  const existing = await Center.findByPk(key);
+  if (!existing) {
+    await Center.create({
+      center_key: key,
+      center_label: label,
+      first_seen_at: now,
+      last_seen_at: now,
+      last_seen_company: company || null,
+    });
+    const created = await Center.findByPk(key);
+    return created ? created.toJSON() : null;
+  }
+
+  await Center.update({
+    center_label: label,
+    last_seen_at: now,
+    last_seen_company: company || existing.last_seen_company || null,
+  }, { where: { center_key: key } });
+  const row = await Center.findByPk(key);
+  return row ? row.toJSON() : null;
+}
+
+async function bulkUpsertCostCenters(items) {
+  if (!Array.isArray(items) || !items.length) return 0;
+  let count = 0;
+  for (const item of items) {
+    const label = normalizeCenterLabel(item?.center_label || item?.center || item);
+    const company = item?.company ? String(item.company).trim() : null;
+    if (!label) continue;
+    await upsertCostCenter(label, company);
+    count += 1;
+  }
+  return count;
+}
+
+async function listCostCenters({ search = null, limit = 2000 } = {}) {
+  const Center = CostCenterModel();
+  const safeLimit = Number.isFinite(Number(limit)) ? Math.min(Math.max(Number(limit), 1), 5000) : 2000;
+  const where = {};
+  if (search) {
+    where.center_label = { [Op.iLike]: `%${String(search).trim()}%` };
+  }
+  const rows = await Center.findAll({
+    where,
+    order: [['center_label', 'ASC']],
+    limit: safeLimit
+  });
+  return rows.map(r => r.toJSON());
+}
+
+async function ensureCostCentersSeeded() {
+  const Center = CostCenterModel();
+  const existing = await Center.count();
+  if (existing > 0) return true;
+  const db = getSequelize();
+  const rows = await db.query(
+    `
+      SELECT DISTINCT NULLIF(TRIM(centro), '') AS center_label
+      FROM flow_payments
+      WHERE centro IS NOT NULL AND TRIM(centro) <> ''
+      LIMIT 5000
+    `,
+    { type: Sequelize.QueryTypes.SELECT }
+  );
+  const items = (rows || [])
+    .map(r => normalizeCenterLabel(r.center_label))
+    .filter(Boolean)
+    .map(label => ({ center_label: label }));
+  await bulkUpsertCostCenters(items);
+  return true;
+}
+
 async function validateDbSchema() {
   if (!dbReady) {
     return { ok: false, reason: 'db_not_ready', missing: [] };
@@ -802,6 +898,7 @@ async function validateDbSchema() {
     { table: 'flow_payments', columns: ['id', 'company', 'assinatura', 'version', 'updated_at'] },
     { table: 'app_roles', columns: ['name', 'permissions'] },
     { table: 'app_center_companies', columns: ['center_key', 'center_label', 'company'] },
+    { table: 'app_cost_centers', columns: ['center_key', 'center_label', 'last_seen_at'] },
     { table: 'app_user_companies', columns: ['user_id', 'company'] }
   ];
   const missing = [];
@@ -961,6 +1058,9 @@ module.exports = {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
+  listCostCenters,
+  upsertCostCenter,
+  bulkUpsertCostCenters,
   listBudgetLimits,
   upsertBudgetLimits,
   insertBackupSnapshot,
