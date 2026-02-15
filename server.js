@@ -2196,6 +2196,50 @@ app.post('/api/auth/refresh', async (req, res) => {
   }
 });
 
+// Admin re-authentication (password confirmation) for sensitive actions.
+app.post('/api/auth/reauth', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), [
+  body('password').isString().isLength({ min: 1 }).withMessage('Password required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    if (!JWT_SECRET) {
+      return res.status(503).json({ success: false, error: 'Auth not ready' });
+    }
+
+    const userId = Number(req.user?.id);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    let user = users.find(u => Number(u.id) === userId);
+    if (isDbReady()) {
+      user = await getUserById(userId);
+    }
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const ok = await bcrypt.compare(String(req.body.password || ''), String(user.password_hash || ''));
+    if (!ok) {
+      return res.status(401).json({ success: false, error: 'Invalid password' });
+    }
+
+    const token = jwt.sign(
+      { sub: userId, type: 'reauth', role: String(req.user?.role || '') },
+      JWT_SECRET,
+      { expiresIn: '3m' }
+    );
+
+    return res.json({ success: true, token, expires_in_seconds: 180 });
+  } catch (error) {
+    logger.error('Reauth failed', { error: error.message });
+    return res.status(500).json({ success: false, error: 'Reauth failed' });
+  }
+});
+
 // Route to check authentication status
 app.get('/api/auth/status', (req, res) => {
   res.json({
@@ -2630,8 +2674,28 @@ app.delete(
   }
 );
 
+function requireAdminReauth(req, res, next) {
+  try {
+    if (!JWT_SECRET) {
+      return res.status(503).json({ success: false, error: 'Auth not ready' });
+    }
+    const token = String(req.headers['x-admin-reauth'] || req.headers['x-reauth-token'] || '').trim();
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'Reauth required' });
+    }
+    const payload = jwt.verify(token, JWT_SECRET);
+    const userId = Number(req.user?.id);
+    if (!payload || payload.type !== 'reauth' || Number(payload.sub) !== userId) {
+      return res.status(401).json({ success: false, error: 'Reauth required' });
+    }
+    return next();
+  } catch (_) {
+    return res.status(401).json({ success: false, error: 'Reauth required' });
+  }
+}
+
 // Admin: revoke all sessions for a user
-app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, [
+app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), requireAdminReauth, criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {
@@ -2653,7 +2717,7 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), auth
 });
 
 // Self: revoke current sessions (logout everywhere)
-app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, async (req, res) => {
+app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), requireAdminReauth, criticalLimiter, async (req, res) => {
   try {
     await setUserSessionRevokedAfter(req.user?.id, new Date());
     await recordAuditEvent(req, 'SESSIONS_REVOKED_SELF', 'Sessões revogadas pelo próprio usuário.', {
@@ -2682,7 +2746,7 @@ app.get('/api/users', authenticateToken, authorizeRole('admin'), authorizePermis
 });
 
 // Admin: update user
-app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), [
+app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), requireAdminReauth, [
   param('id').isInt().withMessage('Valid user ID required'),
   body('username').optional().isLength({ min: 3, max: 50 }).trim().escape(),
   body('email').optional().isEmail().normalizeEmail(),
@@ -2764,7 +2828,7 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePe
 });
 
 // Admin: delete user
-app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), criticalLimiter, [
+app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), requireAdminReauth, criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {

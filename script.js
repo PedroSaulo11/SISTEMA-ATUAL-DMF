@@ -2486,9 +2486,15 @@ class UIManager {
                 } else if (action === 'change-password') {
                     this.changePassword(id);
                 } else if (action === 'revoke-session') {
-                    this.core.admin.revokeSession(id);
+                    this.reauthAdminForAction(`revogar sessão do usuário #${id}`).then((t) => {
+                        if (!t) return;
+                        this.core.admin.revokeSession(id, t, { skipConfirm: true });
+                    });
                 } else if (action === 'delete') {
-                    this.core.admin.deleteUser(id);
+                    this.reauthAdminForAction(`excluir o usuário #${id}`).then((t) => {
+                        if (!t) return;
+                        this.core.admin.deleteUser(id, t);
+                    });
                 }
             });
             body.dataset.boundUsers = 'true';
@@ -3261,6 +3267,167 @@ getArchiveFilterState() {
         }
     }
 
+    async reauthAdminForAction(actionLabel) {
+        // Shows a modal asking the current admin password, then asks for confirmation.
+        // Resolves to a short-lived reauth token (string) or null if canceled/failed.
+        const modal = document.getElementById('reauthModal');
+        if (!modal) {
+            // Fallback to native confirm if modal missing.
+            if (!confirm(`Confirmar ação: ${actionLabel}?`)) return null;
+            return null;
+        }
+
+        const titleEl = document.getElementById('reauthTitle');
+        const descEl = document.getElementById('reauthDescription');
+        const stepPwd = document.getElementById('reauthStepPassword');
+        const stepConfirm = document.getElementById('reauthStepConfirm');
+        const pwdInput = document.getElementById('reauthPassword');
+        const errEl = document.getElementById('reauthError');
+        const btnOk = document.getElementById('btnReauthConfirm');
+        const btnCancel = document.getElementById('btnReauthCancel');
+
+        const setError = (msg) => {
+            if (!errEl) return;
+            if (!msg) {
+                errEl.classList.add('hidden');
+                errEl.textContent = '';
+                return;
+            }
+            errEl.textContent = msg;
+            errEl.classList.remove('hidden');
+        };
+
+        if (titleEl) titleEl.textContent = `Ação sensível`;
+        if (descEl) descEl.textContent = `Para ${actionLabel}, digite a senha do admin.`;
+        if (stepPwd) stepPwd.classList.remove('hidden');
+        if (stepConfirm) stepConfirm.classList.add('hidden');
+        if (pwdInput) pwdInput.value = '';
+        setError('');
+        if (btnOk) btnOk.textContent = 'Confirmar';
+
+        modal.classList.add('is-open');
+        modal.setAttribute('aria-hidden', 'false');
+        try { pwdInput && pwdInput.focus(); } catch (_) {}
+
+        return await new Promise((resolve) => {
+            let stage = 'password';
+            let reauthToken = null;
+            let done = false;
+
+            let cleanup = () => {
+                if (done) return;
+                done = true;
+                try { modal.classList.remove('is-open'); } catch (_) {}
+                try { modal.setAttribute('aria-hidden', 'true'); } catch (_) {}
+                if (btnOk) btnOk.disabled = false;
+                if (btnCancel) btnCancel.disabled = false;
+                if (pwdInput) pwdInput.disabled = false;
+                setError('');
+                if (pwdInput) pwdInput.value = '';
+                if (titleEl) titleEl.textContent = 'Confirmar Ação';
+                if (descEl) descEl.textContent = 'Digite a senha do admin para continuar.';
+                if (stepPwd) stepPwd.classList.remove('hidden');
+                if (stepConfirm) stepConfirm.classList.add('hidden');
+                resolve(reauthToken);
+            };
+
+            const onCancel = () => {
+                reauthToken = null;
+                cleanup();
+            };
+
+            const onOk = async () => {
+                if (stage === 'confirm') {
+                    cleanup();
+                    return;
+                }
+
+                const password = String(pwdInput?.value || '');
+                if (!password) {
+                    setError('Digite a senha do admin.');
+                    return;
+                }
+
+                setError('');
+                if (btnOk) btnOk.disabled = true;
+                if (btnCancel) btnCancel.disabled = true;
+                if (pwdInput) pwdInput.disabled = true;
+
+                try {
+                    const resp = await fetch(`${getApiBase()}/api/auth/reauth`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...getAuthHeaders()
+                        },
+                        body: JSON.stringify({ password })
+                    });
+                    if (!resp.ok) {
+                        if (resp.status === 401) {
+                            setError('Senha incorreta.');
+                        } else if (resp.status === 403) {
+                            setError('Você não tem permissão para esta ação.');
+                        } else {
+                            setError('Falha ao validar senha. Tente novamente.');
+                        }
+                        if (btnOk) btnOk.disabled = false;
+                        if (btnCancel) btnCancel.disabled = false;
+                        if (pwdInput) pwdInput.disabled = false;
+                        try { pwdInput && pwdInput.focus(); } catch (_) {}
+                        return;
+                    }
+                    const data = await resp.json().catch(() => ({}));
+                    reauthToken = String(data.token || '').trim() || null;
+                    if (!reauthToken) {
+                        setError('Falha ao validar senha. Tente novamente.');
+                        if (btnOk) btnOk.disabled = false;
+                        if (btnCancel) btnCancel.disabled = false;
+                        if (pwdInput) pwdInput.disabled = false;
+                        return;
+                    }
+
+                    // Stage 2: explicit confirmation.
+                    stage = 'confirm';
+                    if (titleEl) titleEl.textContent = `Confirmar: ${actionLabel}`;
+                    if (descEl) descEl.textContent = 'Esta ação pode afetar usuários e acesso ao sistema.';
+                    if (stepPwd) stepPwd.classList.add('hidden');
+                    if (stepConfirm) stepConfirm.classList.remove('hidden');
+                    if (btnOk) btnOk.textContent = 'Confirmar';
+                    if (btnOk) btnOk.disabled = false;
+                    if (btnCancel) btnCancel.disabled = false;
+                } catch (_) {
+                    setError('Servidor indisponível. Tente novamente.');
+                    if (btnOk) btnOk.disabled = false;
+                    if (btnCancel) btnCancel.disabled = false;
+                    if (pwdInput) pwdInput.disabled = false;
+                }
+            };
+
+            const onKey = (e) => {
+                if (e.key === 'Escape') onCancel();
+                if (e.key === 'Enter') onOk();
+            };
+
+            btnCancel && btnCancel.addEventListener('click', onCancel, { once: true });
+            btnOk && btnOk.addEventListener('click', onOk);
+            modal.addEventListener('keydown', onKey);
+
+            // Ensure modal closes if user clicks outside and we still resolve null.
+            const outsideClose = (event) => {
+                if (event.target === modal) onCancel();
+            };
+            window.addEventListener('click', outsideClose, { once: true });
+
+            // When we cleanup, remove listeners that were not once-bound.
+            const origCleanup = cleanup;
+            cleanup = () => {
+                try { btnOk && btnOk.removeEventListener('click', onOk); } catch (_) {}
+                try { modal.removeEventListener('keydown', onKey); } catch (_) {}
+                origCleanup();
+            };
+        });
+    }
+
     openCenterAssignmentModal(centerName) {
         const modal = document.getElementById('centerAssignModal');
         if (!modal) return;
@@ -3364,7 +3531,9 @@ getArchiveFilterState() {
         const cargo = formData.get('editUserRole');
 
         if (nome && usuario && email && cargo) {
-            await this.core.admin.updateUser(id, { nome, usuario, email, cargo });
+            const t = await this.reauthAdminForAction(`editar o usuário #${id}`);
+            if (!t) return;
+            await this.core.admin.updateUser(id, { nome, usuario, email, cargo }, t);
             this.closeModal('editUserModal');
             this.renderUsersTable();
             form.reset();
@@ -3388,7 +3557,9 @@ getArchiveFilterState() {
             alert('As senhas não coincidem.');
             return;
         }
-        await this.core.admin.updateUser(id, { senha: newPassword });
+        const t = await this.reauthAdminForAction(`trocar a senha do usuário #${id}`);
+        if (!t) return;
+        await this.core.admin.updateUser(id, { senha: newPassword }, t);
         this.closeModal('changePasswordModal');
         this.renderUsersTable();
         form.reset();
@@ -4109,7 +4280,7 @@ class AdminManager {
         return newUser;
     }
 
-    async updateUser(id, updates) {
+    async updateUser(id, updates, reauthToken = null) {
         if (!this.requireAdmin()) return;
         const user = this.users.find(u => Number(u.id) === Number(id));
         if (!user) return;
@@ -4154,6 +4325,7 @@ class AdminManager {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 },
                 body: JSON.stringify(payload)
@@ -4207,7 +4379,7 @@ class AdminManager {
         alert('Usuário atualizado com sucesso.');
     }
 
-    async deleteUser(id) {
+    async deleteUser(id, reauthToken = null) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
             alert('Não é permitido excluir o próprio usuário logado.');
@@ -4217,6 +4389,7 @@ class AdminManager {
             const response = await fetch(`${getApiBase()}/api/users/${id}`, {
                 method: 'DELETE',
                 headers: {
+                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 }
             });
@@ -4384,18 +4557,22 @@ class AdminManager {
         }
     }
 
-    async revokeSession(id) {
+    async revokeSession(id, reauthToken = null, opts = {}) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
             alert('Use "Revogar Sessão" para si mesmo nas configurações da sessão.');
             return;
         }
-        if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
+        const skipConfirm = !!opts.skipConfirm;
+        if (!skipConfirm) {
+            if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
+        }
         try {
             const response = await fetch(`${getApiBase()}/api/auth/revoke/${id}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 }
             });
@@ -4795,15 +4972,18 @@ function initDomBindings() {
             if (!isAdminUser(system?.currentUser)) {
                 return;
             }
-            if (!confirm('Revogar todas as sessões ativas e sair?')) return;
-            fetch(`${getApiBase()}/api/auth/revoke-self`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...getAuthHeaders()
-                }
-            }).finally(() => {
-                window.dmfLogout?.();
+            system?.ui?.reauthAdminForAction?.('revogar todas as sessões (logout geral)')?.then((t) => {
+                if (!t) return;
+                fetch(`${getApiBase()}/api/auth/revoke-self`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Admin-Reauth': String(t),
+                        ...getAuthHeaders()
+                    }
+                }).finally(() => {
+                    window.dmfLogout?.();
+                });
             });
         });
     }

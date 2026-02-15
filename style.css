@@ -1602,6 +1602,46 @@ tr:hover { background: #f8fbff; }
     margin-top: 8px;
 }
 
+.reauth-modal-content {
+    max-width: 520px;
+}
+
+.reauth-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+}
+
+.reauth-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    line-height: 1.4;
+}
+
+.reauth-confirm-note {
+    margin: 10px 0 4px 0;
+    padding: 12px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 82, 204, 0.18);
+    background: rgba(0, 82, 204, 0.06);
+    color: #1f2a44;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.reauth-error {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(220, 38, 38, 0.25);
+    background: rgba(220, 38, 38, 0.08);
+    color: #7f1d1d;
+    font-weight: 600;
+    font-size: 12px;
+}
+
 #btnAddPayment {
     animation: addPaymentButtonIn 0.6s ease-out;
 }

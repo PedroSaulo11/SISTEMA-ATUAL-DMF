@@ -7,9 +7,9 @@
     <link rel="icon" href="/favicon.ico">
     <link rel="icon" type="image/png" href="/assets/logo-dmf.png">
     <link rel="apple-touch-icon" href="/assets/logo-dmf.png">
-    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f3">
+    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f4">
     <meta name="theme-color" content="#0052cc">
-    <link rel="stylesheet" href="style.css?v=20260215-f3">
+    <link rel="stylesheet" href="style.css?v=20260215-f4">
     <link rel="stylesheet" href="assistant.css?v=20260215-f1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -88,6 +88,28 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
+
+<!-- Reauth modal for sensitive admin actions -->
+<div id="reauthModal" class="modal" aria-hidden="true">
+    <div class="modal-content reauth-modal-content" role="dialog" aria-modal="true" aria-labelledby="reauthTitle">
+        <h3 id="reauthTitle" class="reauth-title">Confirmar Ação</h3>
+        <p id="reauthDescription" class="reauth-desc">Digite a senha do admin para continuar.</p>
+
+        <div id="reauthStepPassword" class="reauth-step">
+            <input type="password" id="reauthPassword" class="styled-input" placeholder="Senha do admin" autocomplete="current-password">
+            <div id="reauthError" class="reauth-error hidden"></div>
+        </div>
+
+        <div id="reauthStepConfirm" class="reauth-step hidden">
+            <div class="reauth-confirm-note">Senha confirmada. Deseja realmente executar esta ação?</div>
+        </div>
+
+        <div class="modal-actions">
+            <button type="button" id="btnReauthConfirm" class="btn btn-success">Confirmar</button>
+            <button type="button" id="btnReauthCancel" class="btn btn-danger">Cancelar</button>
+        </div>
+    </div>
+</div>
 
 <!-- Modal for Creating User -->
 <div id="createUserModal" class="modal">
@@ -342,6 +364,6 @@
   </div>
 </div>
 
-<script src="bootstrap.js?v=20260215-f3"></script>
+<script src="bootstrap.js?v=20260215-f4"></script>
 </body>
 </html>
