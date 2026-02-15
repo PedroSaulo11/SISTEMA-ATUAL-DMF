@@ -680,6 +680,13 @@ tr:hover { background: #f8fbff; }
     margin-left: auto;
 }
 
+.empty-row {
+    padding: 18px 12px;
+    text-align: center;
+    color: rgba(0, 0, 0, 0.65);
+    font-weight: 600;
+}
+
 .center-permission-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

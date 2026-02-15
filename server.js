@@ -30,6 +30,7 @@ const {
   getServiceToken,
   upsertServiceToken,
   listFlowPayments,
+  getFlowPaymentsStats,
   replaceFlowPayments,
   upsertFlowPayment,
   updateFlowPaymentWithVersion,
@@ -1453,6 +1454,28 @@ app.get('/api/flow-payments', authenticateToken, authorizeRole('user'), requireC
   } catch (error) {
     logger.error('Error listing flow payments', { error: error.message });
     res.status(500).json({ error: 'Failed to list flow payments' });
+  }
+});
+
+// Diagnostics: summarize current flow data by company (admin only).
+app.get('/api/flow-payments/stats', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const companies = DEFAULT_COMPANIES_UNIQUE;
+    const stats = await getFlowPaymentsStats(companies);
+    const grand = stats.reduce((acc, s) => {
+      acc.count += Number(s.count || 0) || 0;
+      acc.total_abs += Number(s.total_abs || 0) || 0;
+      acc.signed += Number(s.signed || 0) || 0;
+      acc.pending += Number(s.pending || 0) || 0;
+      return acc;
+    }, { count: 0, total_abs: 0, signed: 0, pending: 0 });
+    return res.json({ companies, stats, grand });
+  } catch (error) {
+    logger.error('Error computing flow payments stats', { error: error.message });
+    return res.status(500).json({ error: 'Failed to compute stats' });
   }
 });
 

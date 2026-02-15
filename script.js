@@ -3422,6 +3422,18 @@ getArchiveFilterState() {
             return String(a?.id || '').localeCompare(String(b?.id || ''));
         });
 
+        if (!rows.length) {
+            const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
+            body.innerHTML = `
+                <tr>
+                    <td colspan="9" class="empty-row">
+                        Nenhum pagamento encontrado para ${company}. Clique em "Recarregar do servidor" ou "Importar".
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
         body.innerHTML = rows.map(p => {
             const assinaturaTime = p.assinatura?.dataISO
                 ? new Date(p.assinatura.dataISO).toLocaleString('pt-BR')
@@ -3497,7 +3509,19 @@ getArchiveFilterState() {
         const pending = data.filter(p => !p.assinatura).length;
         document.getElementById('totalAssinados').innerText = signed;
         document.getElementById('totalPendentes').innerText = pending;
-        this.updateDashboardSummary && this.updateDashboardSummary(pending);
+
+        // If the flow is empty, be explicit: this usually means "not imported yet" or "wrong company selected".
+        if (!Array.isArray(data) || data.length === 0) {
+            const nextAction = document.getElementById('nextActionText');
+            const pendingEl = document.getElementById('pendingCount');
+            const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
+            if (pendingEl) pendingEl.textContent = '0';
+            if (nextAction) {
+                nextAction.textContent = `Nenhum pagamento encontrado para ${company}. Se isso estiver errado, troque a empresa no menu ou clique em Importar/Recarregar.`;
+            }
+        } else {
+            this.updateDashboardSummary && this.updateDashboardSummary(pending);
+        }
     }
 
     renderCompanyTotals() {

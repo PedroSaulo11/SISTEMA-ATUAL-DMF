@@ -487,6 +487,48 @@ async function listFlowPayments(company = null) {
   return rows.map(r => r.toJSON());
 }
 
+async function getFlowPaymentsStats(companies = null) {
+  const db = getSequelize();
+  const list = Array.isArray(companies) ? companies.map(normalizeCompany).filter(Boolean) : null;
+  const includeNullForDMF = Array.isArray(list) ? list.includes('DMF') : false;
+
+  const whereSql = list && list.length
+    ? `(company = ANY(:companies) OR (:includeNullForDMF = true AND company IS NULL))`
+    : `TRUE`;
+
+  const rows = await db.query(
+    `
+      SELECT
+        COALESCE(NULLIF(TRIM(company), ''), 'DMF') AS company,
+        COUNT(*)::bigint AS count,
+        SUM(ABS(COALESCE(valor, 0)))::double precision AS total_abs,
+        SUM(CASE WHEN assinatura IS NOT NULL THEN 1 ELSE 0 END)::bigint AS signed,
+        SUM(CASE WHEN assinatura IS NULL THEN 1 ELSE 0 END)::bigint AS pending,
+        MAX(updated_at) AS last_updated_at
+      FROM flow_payments
+      WHERE ${whereSql}
+      GROUP BY COALESCE(NULLIF(TRIM(company), ''), 'DMF')
+      ORDER BY COALESCE(NULLIF(TRIM(company), ''), 'DMF') ASC
+    `,
+    {
+      replacements: {
+        companies: list || [],
+        includeNullForDMF,
+      },
+      type: Sequelize.QueryTypes.SELECT
+    }
+  );
+
+  return (rows || []).map((r) => ({
+    company: normalizeCompany(r.company) || r.company,
+    count: Number(r.count || 0) || 0,
+    total_abs: Number(r.total_abs || 0) || 0,
+    signed: Number(r.signed || 0) || 0,
+    pending: Number(r.pending || 0) || 0,
+    last_updated_at: r.last_updated_at ? new Date(r.last_updated_at).toISOString() : null,
+  }));
+}
+
 async function replaceFlowPayments(payments, company = null) {
   const Flow = FlowPaymentModel();
   const db = getSequelize();
@@ -1042,6 +1084,7 @@ module.exports = {
   getServiceToken,
   upsertServiceToken,
   listFlowPayments,
+  getFlowPaymentsStats,
   replaceFlowPayments,
   upsertFlowPayment,
   updateFlowPaymentWithVersion,
