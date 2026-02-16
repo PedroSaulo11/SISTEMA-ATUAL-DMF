@@ -1708,6 +1708,17 @@ class UIManager {
         return String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
     }
 
+    canAccessTab(tab) {
+        const t = String(tab || '').trim().toLowerCase();
+        if (t === 'admin') {
+            return this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
+        }
+        if (t === 'audit') {
+            return this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
+        }
+        return true;
+    }
+
     setRoute(tab, company = null, { replace = false } = {}) {
         try {
             const t = String(tab || '').trim();
@@ -1719,7 +1730,7 @@ class UIManager {
                 if (c) params.set('company', c);
             }
             const nextUrl = `/?${params.toString()}`;
-            const state = { tab: t, company: params.get('company') || null };
+            const state = { tab: t, company: params.get('company') || null, saved_at: Date.now() };
             if (replace) history.replaceState(state, '', nextUrl);
             else history.pushState(state, '', nextUrl);
 
@@ -1752,11 +1763,14 @@ class UIManager {
         if (!allowed.has(t)) return;
         const viewId = t === 'accessdenied' ? 'accessDenied' : t;
         if (t === 'payments') {
-            const c = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+            const knownCompanies = new Set(['DMF', 'JFX', 'Real Energy']);
+            const normalized = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+            const c = knownCompanies.has(normalized) ? normalized : 'DMF';
             const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
             const targetButton = allPaymentButtons.find(btn =>
                 this.normalizeCompany(btn.getAttribute('data-company')) === c
-            ) || allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
+            ) || allPaymentButtons.find(btn => this.normalizeCompany(btn.getAttribute('data-company')) === 'DMF')
+              || allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
             this.navigate('payments', targetButton || null, { pushRoute: false });
             return;
         }
@@ -1769,6 +1783,8 @@ class UIManager {
         const tab = String(params.get('tab') || '').trim().toLowerCase();
         const company = String(params.get('company') || '').trim();
         const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli', 'accessdenied']);
+        const ROUTE_TTL_MS = 24 * 60 * 60 * 1000;
+        let fallbackNote = '';
 
         let t = tab && allowed.has(tab) ? tab : null;
         let c = company || null;
@@ -1781,8 +1797,13 @@ class UIManager {
                     const raw = localStorage.getItem(`dmf_last_route_${k}`);
                     const parsed = raw ? JSON.parse(raw) : null;
                     if (parsed?.tab && allowed.has(String(parsed.tab).toLowerCase())) {
-                        t = String(parsed.tab).toLowerCase();
-                        c = parsed.company || null;
+                        const savedAt = Number(parsed.saved_at || 0);
+                        if (!savedAt || (Date.now() - savedAt) <= ROUTE_TTL_MS) {
+                            t = String(parsed.tab).toLowerCase();
+                            c = parsed.company || null;
+                        } else {
+                            fallbackNote = 'Abrindo no Dashboard por segurança (última rota expirada).';
+                        }
                     }
                 }
             } catch (_) {}
@@ -1792,11 +1813,39 @@ class UIManager {
             t = 'dashboard';
         }
 
+        // Security default: never auto-open admin from restored state.
+        if (t === 'admin') {
+            t = 'dashboard';
+            fallbackNote = fallbackNote || 'Abrindo no Dashboard por segurança.';
+        }
+
+        // If user has no access to saved route, fallback gracefully.
+        if (!this.canAccessTab(t)) {
+            t = 'dashboard';
+            fallbackNote = fallbackNote || 'Sua última aba não está mais disponível para este usuário.';
+        }
+
+        if (t === 'payments') {
+            const knownCompanies = new Set(['DMF', 'JFX', 'Real Energy']);
+            const normalized = this.normalizeCompany(c || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
+            if (!knownCompanies.has(normalized)) {
+                c = 'DMF';
+                fallbackNote = fallbackNote || 'Empresa inválida; abrindo o fluxo DMF.';
+            } else {
+                c = normalized;
+            }
+        } else {
+            c = null;
+        }
+
         // Sync URL state once on boot, then navigate without pushing again.
         if (opts.replace) {
             this.setRoute(t, c, { replace: true });
         }
         this.navigateFromRoute(t, c);
+        if (fallbackNote) {
+            showToast(fallbackNote, 'info', 3000);
+        }
     }
 
     updateTopbarTitle(viewId, company = null) {
