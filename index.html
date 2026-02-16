@@ -7,9 +7,9 @@
     <link rel="icon" href="/favicon.ico">
     <link rel="icon" type="image/png" href="/assets/logo-dmf.png">
     <link rel="apple-touch-icon" href="/assets/logo-dmf.png">
-    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f7">
+    <link rel="manifest" href="/manifest.webmanifest?v=20260215-f8">
     <meta name="theme-color" content="#0052cc">
-    <link rel="stylesheet" href="style.css?v=20260215-f7">
+    <link rel="stylesheet" href="style.css?v=20260215-f8">
     <link rel="stylesheet" href="assistant.css?v=20260215-f1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
@@ -93,10 +93,22 @@
 </div>
 
 <nav id="mobileBottomNav" class="mobile-bottom-nav" aria-label="Navegação rápida">
-    <button class="mobile-bottom-btn active" data-nav="dashboard" type="button">Dashboard</button>
-    <button class="mobile-bottom-btn" data-nav="payments" data-company="DMF" type="button">Fluxo</button>
-    <button class="mobile-bottom-btn" data-nav="audit" type="button">Auditoria</button>
-    <button class="mobile-bottom-btn" data-nav="assistente" type="button">Assistente</button>
+    <button class="mobile-bottom-btn active" data-nav="dashboard" data-icon="home" type="button">
+        <span class="mb-ico" aria-hidden="true">⌂</span>
+        <span class="mb-label">Início</span>
+    </button>
+    <button class="mobile-bottom-btn" data-nav="payments" data-company="DMF" data-icon="flow" type="button">
+        <span class="mb-ico" aria-hidden="true">≣</span>
+        <span id="mobileFlowLabel" class="mb-label">Fluxo</span>
+    </button>
+    <button class="mobile-bottom-btn" data-nav="audit" data-icon="audit" type="button">
+        <span class="mb-ico" aria-hidden="true">◫</span>
+        <span class="mb-label">Logs</span>
+    </button>
+    <button class="mobile-bottom-btn" data-nav="assistente" data-icon="assistant" type="button">
+        <span class="mb-ico" aria-hidden="true">◎</span>
+        <span class="mb-label">Assist.</span>
+    </button>
 </nav>
 
 <div id="toastContainer" class="toast-container"></div>
@@ -376,6 +388,6 @@
   </div>
 </div>
 
-<script src="bootstrap.js?v=20260215-f7"></script>
+<script src="bootstrap.js?v=20260215-f8"></script>
 </body>
 </html>

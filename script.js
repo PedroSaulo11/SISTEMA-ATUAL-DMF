@@ -105,6 +105,20 @@ function showToast(message, type = 'info', ttl = 3500) {
     }, ttl);
 }
 
+function triggerHaptic(kind = 'tap') {
+    try {
+        if (!navigator || typeof navigator.vibrate !== 'function') return;
+        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        if (kind === 'confirm') {
+            navigator.vibrate([10, 20, 12]);
+            return;
+        }
+        navigator.vibrate(10);
+    } catch (_) {
+        // no-op
+    }
+}
+
 // --- Lazy loaders for heavy libraries (PWA performance) ---
 function loadScriptOnce(src, { timeoutMs = 20000 } = {}) {
     window.__DMF_LOADED_SCRIPTS = window.__DMF_LOADED_SCRIPTS || new Map();
@@ -1759,7 +1773,12 @@ class UIManager {
             return;
         }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-        document.getElementById(viewId).classList.remove('hidden');
+        const targetView = document.getElementById(viewId);
+        targetView.classList.remove('hidden');
+        targetView.classList.remove('view-enter');
+        void targetView.offsetWidth;
+        targetView.classList.add('view-enter');
+        setTimeout(() => targetView.classList.remove('view-enter'), 160);
         // Update active button(s) in sidebar + mobile bottom nav.
         document.querySelectorAll('.btn-side, .mobile-bottom-btn').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
@@ -2030,6 +2049,10 @@ class UIManager {
 
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         view.classList.remove('hidden');
+        view.classList.remove('view-enter');
+        void view.offsetWidth;
+        view.classList.add('view-enter');
+        setTimeout(() => view.classList.remove('view-enter'), 160);
 
         document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
@@ -2128,6 +2151,14 @@ class UIManager {
         const title = document.getElementById('paymentsTitle');
         if (title) {
             title.textContent = `Fluxo de Pagamentos ${this.companyFilter}`;
+        }
+        const mobileFlowBtn = document.querySelector('.mobile-bottom-btn[data-nav="payments"]');
+        if (mobileFlowBtn) {
+            mobileFlowBtn.setAttribute('data-company', this.companyFilter);
+        }
+        const mobileFlowLabel = document.getElementById('mobileFlowLabel');
+        if (mobileFlowLabel) {
+            mobileFlowLabel.textContent = `Fluxo ${this.companyFilter === 'Real Energy' ? 'Real' : this.companyFilter}`;
         }
     }
 
@@ -3737,6 +3768,7 @@ getArchiveFilterState() {
 
             const onOk = async () => {
                 if (stage === 'confirm') {
+                    triggerHaptic('confirm');
                     cleanup();
                     return;
                 }
@@ -5550,6 +5582,7 @@ function initDomBindings() {
     // Navigation event listeners
     document.querySelectorAll('[data-nav]').forEach(button => {
         button.addEventListener('click', function() {
+            triggerHaptic('tap');
             const viewId = this.getAttribute('data-nav');
             system.ui.navigate(viewId, this);
         });
@@ -5601,6 +5634,7 @@ function initDomBindings() {
     const paymentsToggleIcon = document.getElementById('paymentsToggleIcon');
     if (paymentsToggle && paymentsSubmenu && paymentsToggleIcon) {
         paymentsToggle.addEventListener('click', function() {
+            triggerHaptic('tap');
             paymentsSubmenu.classList.toggle('hidden');
             const isOpen = !paymentsSubmenu.classList.contains('hidden');
             paymentsToggle.classList.toggle('is-open', isOpen);
