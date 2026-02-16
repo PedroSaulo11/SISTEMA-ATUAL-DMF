@@ -1,7 +1,7 @@
 /* Minimal SW to enable installability.
    Never cache /api/* responses (auth + sensitive). */
 
-const SW_VERSION = '20260215-f6';
+const SW_VERSION = '20260215-f7';
 const CACHE_NAME = `dmf-static-${SW_VERSION}`;
 
 const PRECACHE = [
@@ -31,8 +31,13 @@ self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
     await cache.addAll(PRECACHE.map((u) => `${u}?v=${encodeURIComponent(SW_VERSION)}`));
-    self.skipWaiting();
   })());
+});
+
+self.addEventListener('message', (event) => {
+  if (event?.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {

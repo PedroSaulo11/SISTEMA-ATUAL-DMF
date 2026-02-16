@@ -2,7 +2,7 @@
    Must be external JS because CSP in production blocks inline scripts. */
 (async function loadAppWithFragments() {
     try {
-        const ASSET_VERSION = '20260215-f6';
+        const ASSET_VERSION = '20260215-f7';
         const sections = document.querySelectorAll('section[data-fragment]');
 
         for (const section of sections) {
@@ -33,7 +33,20 @@
         // PWA installability: minimal service worker (no API caching).
         if ('serviceWorker' in navigator) {
             try {
-                await navigator.serviceWorker.register('/sw.js?v=' + encodeURIComponent(ASSET_VERSION));
+                const reg = await navigator.serviceWorker.register('/sw.js?v=' + encodeURIComponent(ASSET_VERSION));
+                window.__DMF_SW_REG = reg;
+                if (reg.waiting) {
+                    window.dispatchEvent(new CustomEvent('dmf-sw-update', { detail: { registration: reg } }));
+                }
+                reg.addEventListener('updatefound', () => {
+                    const worker = reg.installing;
+                    if (!worker) return;
+                    worker.addEventListener('statechange', () => {
+                        if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+                            window.dispatchEvent(new CustomEvent('dmf-sw-update', { detail: { registration: reg } }));
+                        }
+                    });
+                });
             } catch (_) {
                 // ignore SW registration errors; app must still work normally.
             }

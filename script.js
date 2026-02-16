@@ -145,6 +145,53 @@ async function ensureLeaflet() {
     return !!(window.L && typeof window.L.map === 'function');
 }
 
+function setupPwaUpdateBanner() {
+    const banner = document.getElementById('pwaUpdateBanner');
+    const btnNow = document.getElementById('btnPwaUpdateNow');
+    const btnLater = document.getElementById('btnPwaUpdateLater');
+    if (!banner || !btnNow || !btnLater) return;
+
+    let pendingRegistration = null;
+    const show = () => banner.classList.remove('hidden');
+    const hide = () => banner.classList.add('hidden');
+
+    const onUpdateEvent = async (evt) => {
+        const reg = evt?.detail?.registration || window.__DMF_SW_REG || await navigator.serviceWorker?.getRegistration?.();
+        if (!reg) return;
+        pendingRegistration = reg;
+        show();
+    };
+
+    window.addEventListener('dmf-sw-update', onUpdateEvent);
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        navigator.serviceWorker.getRegistration().then((reg) => {
+            if (reg?.waiting) {
+                pendingRegistration = reg;
+                show();
+            }
+        }).catch(() => {});
+    }
+
+    let refreshing = false;
+    if (navigator.serviceWorker) {
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            window.location.reload();
+        });
+    }
+
+    btnLater.addEventListener('click', hide);
+    btnNow.addEventListener('click', () => {
+        const worker = pendingRegistration?.waiting;
+        if (!worker) {
+            hide();
+            return;
+        }
+        worker.postMessage({ type: 'SKIP_WAITING' });
+    });
+}
+
 function parseJwtPayload(token) {
     try {
         const payload = token.split('.')[1];
@@ -516,6 +563,51 @@ class DataProcessor {
         }
     }
 
+    getFlowSnapshotStorageKey(company) {
+        return `dmf_flow_snapshot_${this.companyKey(company)}`;
+    }
+
+    saveFlowSnapshot(company, payments) {
+        try {
+            const key = this.getFlowSnapshotStorageKey(company);
+            const payload = {
+                saved_at: Date.now(),
+                company: this.normalizeCompany(company),
+                payments: Array.isArray(payments) ? payments : []
+            };
+            localStorage.setItem(key, JSON.stringify(payload));
+        } catch (_) {}
+    }
+
+    loadFlowSnapshot(company) {
+        try {
+            const key = this.getFlowSnapshotStorageKey(company);
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            const payload = JSON.parse(raw);
+            if (!payload || !Array.isArray(payload.payments)) return null;
+            return payload;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    restoreFlowFromSnapshot(company) {
+        const snapshot = this.loadFlowSnapshot(company);
+        if (!snapshot || !Array.isArray(snapshot.payments)) return false;
+        this.records = snapshot.payments.slice();
+        this.currentCompany = this.normalizeCompany(company);
+        this.save();
+        window.DMF_CONTEXT.pagamentos = this.records;
+        window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
+        window.DMF_CONTEXT.currentCompany = this.currentCompany;
+        if (window.DMF_BRAIN) {
+            window.DMF_BRAIN.pagamentos = this.records;
+            window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
+        }
+        return true;
+    }
+
     userCompanyKey() {
         const u = this.core?.currentUser;
         const raw = u?.id || u?.email || u?.username || null;
@@ -599,6 +691,9 @@ class DataProcessor {
                     this.flowFetchCooldownUntil = Date.now() + delay;
                     setFlowSyncStatus(`Muitas solicitações. Reenviando em ${Math.ceil(delay / 1000)}s.`, 'warn');
                     showToast('Servidor ocupado. Vamos tentar novamente em instantes.', 'warn');
+                    if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
+                        setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
+                    }
                     console.warn('Flow payments fetch throttled:', response.status);
                     return false;
                 }
@@ -606,6 +701,9 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar. Tente novamente.', 'error');
                     showToast('Falha ao sincronizar pagamentos.', 'error');
+                    if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
+                        setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
+                    }
                 }
                 return false;
             }
@@ -641,6 +739,7 @@ class DataProcessor {
             } else {
                 setFlowSyncStatus('Nenhum pagamento encontrado no servidor.', 'warn');
             }
+            this.saveFlowSnapshot(company, this.records);
             this.lastSyncAt = new Date();
             this.resetFlowBackoff();
             return true;
@@ -648,6 +747,9 @@ class DataProcessor {
             console.warn('Flow payments fetch unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível. Tente novamente.', 'error');
             showToast('Servidor indisponível. Tente novamente.', 'error');
+            if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
+                setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
+            }
             const delay = this.nextFlowBackoffDelay();
             this.flowFetchCooldownUntil = Date.now() + delay;
             return false;
@@ -987,6 +1089,7 @@ class DataProcessor {
 
     save() {
         localStorage.setItem(this.getPaymentsStorageKey(this.currentCompany), JSON.stringify(this.records));
+        this.saveFlowSnapshot(this.currentCompany, this.records);
     }
 
     async syncImportToBackend() {
@@ -1657,9 +1760,16 @@ class UIManager {
         }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         document.getElementById(viewId).classList.remove('hidden');
-        // Update active button
-        document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
+        // Update active button(s) in sidebar + mobile bottom nav.
+        document.querySelectorAll('.btn-side, .mobile-bottom-btn').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
+        const navKey = String(activeButton?.getAttribute?.('data-nav') || viewId || '').trim().toLowerCase();
+        const mobileBtn = document.querySelector(`.mobile-bottom-btn[data-nav="${navKey}"]`);
+        if (mobileBtn) mobileBtn.classList.add('active');
+        if (!mobileBtn && viewId === 'payments') {
+            const fallbackPaymentsBtn = document.querySelector(`.mobile-bottom-btn[data-nav="payments"]`);
+            if (fallbackPaymentsBtn) fallbackPaymentsBtn.classList.add('active');
+        }
 
         const company = viewId === 'payments'
             ? this.normalizeCompany(activeButton?.getAttribute?.('data-company') || this.core?.data?.currentCompany || this.companyFilter || 'DMF')
@@ -1678,8 +1788,11 @@ class UIManager {
         }
 
         if (viewId === 'admin') {
+            this.setViewLoading('admin', true);
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
+            }).finally(() => {
+                this.setViewLoading('admin', false);
             });
         }
 
@@ -1692,14 +1805,41 @@ class UIManager {
         if (viewId === 'payments') {
             const company = activeButton?.getAttribute?.('data-company');
             if (company) {
+                this.setViewLoading('payments', true);
                 this.setCompanyFilter(company);
                 this.core.data.setCurrentCompany(company);
                 this.core.data.loadFromBackend(true, company).then(() => {
                     this.renderPaymentsTable();
                     this.updateStats();
+                }).finally(() => {
+                    this.setViewLoading('payments', false);
                 });
             }
         }
+    }
+
+    setViewLoading(viewId, isLoading) {
+        const view = document.getElementById(viewId);
+        if (!view) return;
+        const id = `dmfSkeleton_${viewId}`;
+        let skeleton = document.getElementById(id);
+        if (!isLoading) {
+            if (skeleton) skeleton.remove();
+            return;
+        }
+        if (skeleton) return;
+        skeleton = document.createElement('div');
+        skeleton.id = id;
+        skeleton.className = 'view-skeleton';
+        skeleton.setAttribute('aria-hidden', 'true');
+        skeleton.innerHTML = `
+            <div class="line w40"></div>
+            <div class="line w100"></div>
+            <div class="line w80"></div>
+            <div class="line w60"></div>
+            <div class="line w100"></div>
+        `;
+        view.prepend(skeleton);
     }
 
     safeUserKey() {
@@ -2105,6 +2245,7 @@ class UIManager {
             document.getElementById('adminMenu').classList.remove('hidden');
         }
 
+        this.setViewLoading('dashboard', true);
         this.loadInitialDashboardData().then(() => {
             // Pull the authoritative cost center registry from backend (across companies/devices).
             this.core.data.loadCostCentersFromBackend().then(() => {
@@ -2122,6 +2263,7 @@ class UIManager {
         }).finally(() => {
             // Avoid racing two simultaneous loadFromBackend() calls right after login.
             this.startDashboardSummaryAutoRefresh();
+            this.setViewLoading('dashboard', false);
         });
         this.startBackendStatusMonitor();
         this.startSessionMonitor();
@@ -5188,6 +5330,7 @@ function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = nu
 
 // Event listeners for modal forms
 function initDomBindings() {
+    setupPwaUpdateBanner();
     const createUserForm = document.getElementById('createUserForm');
     const createRoleForm = document.getElementById('createRoleForm');
     const editUserForm = document.getElementById('editUserForm');

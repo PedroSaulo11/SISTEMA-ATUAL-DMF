@@ -152,6 +152,90 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     z-index: 105;
 }
 
+.pwa-update-banner {
+    position: fixed;
+    top: 58px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 130;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.95);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+    max-width: calc(100vw - 20px);
+}
+
+.pwa-update-text {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+
+.pwa-update-btn {
+    padding: 8px 10px;
+    font-size: 12px;
+    min-height: 36px;
+}
+
+.mobile-bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 120;
+    height: 60px;
+    display: none;
+    align-items: stretch;
+    background: rgba(10, 23, 48, 0.96);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.mobile-bottom-btn {
+    flex: 1 1 0;
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    min-height: 44px;
+}
+
+.mobile-bottom-btn.active {
+    color: #fff;
+    background: rgba(0, 82, 204, 0.2);
+}
+
+.view-skeleton {
+    display: grid;
+    gap: 12px;
+    margin: 8px 0 18px 0;
+}
+
+.view-skeleton .line {
+    height: 14px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(148, 163, 184, 0.2), rgba(148, 163, 184, 0.38), rgba(148, 163, 184, 0.2));
+    background-size: 200% 100%;
+    animation: dmfSkeleton 1.2s linear infinite;
+}
+
+.view-skeleton .line.w40 { width: 40%; }
+.view-skeleton .line.w60 { width: 60%; }
+.view-skeleton .line.w80 { width: 80%; }
+.view-skeleton .line.w100 { width: 100%; }
+
+@keyframes dmfSkeleton {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 .sidebar {
     width: var(--sidebar-width);
     background: linear-gradient(180deg, var(--primary) 0%, var(--primary-dark) 100%);
@@ -305,6 +389,7 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
 /* --- Mobile / Responsive --- */
 @media (max-width: 920px) {
     .mobile-topbar { display: flex; }
+    .mobile-bottom-nav { display: flex; }
 
     .sidebar {
         transform: translateX(-102%);
@@ -319,7 +404,7 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
 
     .main-content {
         margin-left: 0;
-        padding: 18px 14px;
+        padding: 18px 14px 82px 14px;
     }
 
     .card {
