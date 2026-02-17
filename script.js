@@ -1,4 +1,4 @@
-// ==== DMF BRAIN (auto-gerado) ====
+﻿// ==== DMF BRAIN (auto-gerado) ====
 window.DMF_BRAIN = window.DMF_BRAIN || {
   usuarios: [],
   pagamentos: [],
@@ -312,18 +312,18 @@ class AuthManager {
                 this.setSession(apiUser);
                 return;
             }
-            alert("Falha na autenticação.");
+            alert("Falha na autenticaÃ§Ã£o.");
             return;
         } catch (error) {
             console.warn('API login failed:', error.message);
             if (!isLocalRuntime()) {
-                alert("Falha na autenticação.");
+                alert("Falha na autenticaÃ§Ã£o.");
                 return;
             }
             console.warn('Local runtime detected, using local auth fallback.');
         }
 
-        // Verificar usuários armazenados por usuario ou email
+        // Verificar usuÃ¡rios armazenados por usuario ou email
         const user = this.core.admin.users.find(u =>
             (u.usuario === input || u.email === input) &&
             (u.senha === hash(pass) || u.senha === pass)
@@ -331,7 +331,7 @@ class AuthManager {
         if (user) {
             this.setSession(user);
         } else {
-            alert("Falha na autenticação.");
+            alert("Falha na autenticaÃ§Ã£o.");
         }
     }
 
@@ -372,7 +372,7 @@ class DataProcessor {
         this.lastSyncAt = null;
         this.centerCompanyOverrides = this.loadCenterCompanyOverrides();
         this.pendingCenterAssignments = new Set();
-        // === Centros de Custo: carga e união com o fluxo === // ALTERADO
+        // === Centros de Custo: carga e uniÃ£o com o fluxo === // ALTERADO
         const persisted = JSON.parse(localStorage.getItem(core.storageKeys.COST_CENTERS) || '[]'); // ALTERADO
         const fromRecords = Array.from(new Set((this.records || []).map(r => (r.centro || '').trim()).filter(Boolean))); // ALTERADO
         this.costCenters = this._dedupCaseInsensitive([...(persisted || []), ...fromRecords]); // ALTERADO
@@ -538,26 +538,26 @@ class DataProcessor {
             if (!response.ok) {
                 if (response.status === 401) {
                     console.warn('Flow payments fetch unauthorized');
-                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    setFlowSyncStatus('SessÃ£o expirada. FaÃ§a login novamente.', 'warn');
                     try { hardLogout(); } catch (_) {}
                     this.resetFlowBackoff();
                     return false;
                 }
                 if (response.status === 403) {
                     console.warn('Flow payments fetch forbidden');
-                    setFlowSyncStatus('Sem permissão para acessar o fluxo.', 'warn');
+                    setFlowSyncStatus('Sem permissÃ£o para acessar o fluxo.', 'warn');
                     this.resetFlowBackoff();
                     return false;
                 }
                 if (response.status === 409) {
-                    setFlowSyncStatus('Conflito de versão detectado. Recarregue o fluxo.', 'warn');
-                    showToast('Conflito de versão. Recarregue os dados.', 'warn');
+                    setFlowSyncStatus('Conflito de versÃ£o detectado. Recarregue o fluxo.', 'warn');
+                    showToast('Conflito de versÃ£o. Recarregue os dados.', 'warn');
                     return false;
                 }
                 if (response.status === 429 || response.status >= 500) {
                     const delay = this.nextFlowBackoffDelay();
                     this.flowFetchCooldownUntil = Date.now() + delay;
-                    setFlowSyncStatus(`Muitas solicitações. Reenviando em ${Math.ceil(delay / 1000)}s.`, 'warn');
+                    setFlowSyncStatus(`Muitas solicitaÃ§Ãµes. Reenviando em ${Math.ceil(delay / 1000)}s.`, 'warn');
                     showToast('Servidor ocupado. Vamos tentar novamente em instantes.', 'warn');
                     console.warn('Flow payments fetch throttled:', response.status);
                     return false;
@@ -570,7 +570,7 @@ class DataProcessor {
                 return false;
             }
             if (response.status === 304) {
-                setFlowSyncStatus(`Sem alterações. Última verificação: ${formatTimeNow()}`, 'ok');
+                setFlowSyncStatus(`Sem alteraÃ§Ãµes. Ãšltima verificaÃ§Ã£o: ${formatTimeNow()}`, 'ok');
                 this.lastSyncAt = new Date();
                 this.resetFlowBackoff();
                 return true;
@@ -597,7 +597,7 @@ class DataProcessor {
                 window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
             }
             if (this.records.length) {
-                setFlowSyncStatus(`Sincronizado às ${formatTimeNow()}`, 'ok');
+                setFlowSyncStatus(`Sincronizado Ã s ${formatTimeNow()}`, 'ok');
             } else {
                 setFlowSyncStatus('Nenhum pagamento encontrado no servidor.', 'warn');
             }
@@ -606,8 +606,8 @@ class DataProcessor {
             return true;
         } catch (error) {
             console.warn('Flow payments fetch unavailable:', error.message);
-            setFlowSyncStatus('Servidor indisponível. Tente novamente.', 'error');
-            showToast('Servidor indisponível. Tente novamente.', 'error');
+            setFlowSyncStatus('Servidor indisponÃ­vel. Tente novamente.', 'error');
+            showToast('Servidor indisponÃ­vel. Tente novamente.', 'error');
             const delay = this.nextFlowBackoffDelay();
             this.flowFetchCooldownUntil = Date.now() + delay;
             return false;
@@ -662,7 +662,7 @@ class DataProcessor {
                     alert(`Existem ${payload.pending} pagamentos pendentes de assinatura.`);
                     return false;
                 }
-                alert(payload?.error || 'Não foi possível arquivar o fluxo.');
+                alert(payload?.error || 'NÃ£o foi possÃ­vel arquivar o fluxo.');
                 return false;
             }
             const data = await response.json();
@@ -691,7 +691,7 @@ class DataProcessor {
             });
             if (!response.ok) {
                 const payload = await response.json().catch(() => ({}));
-                alert(payload?.error || 'Não foi possível excluir o fluxo.');
+                alert(payload?.error || 'NÃ£o foi possÃ­vel excluir o fluxo.');
                 return false;
             }
             await this.loadArchivesFromBackend();
@@ -743,14 +743,14 @@ class DataProcessor {
         if (!archive) return;
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_archives') &&
             !this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
-            alert('Você não tem permissão para exportar fluxos anteriores.');
+            alert('VocÃª nÃ£o tem permissÃ£o para exportar fluxos anteriores.');
             return;
         }
         const payments = Array.isArray(archive.payments) ? archive.payments : [];
         const header = [
             'Fornecedor',
             'Data',
-            'Descrição',
+            'DescriÃ§Ã£o',
             'Valor',
             'Centro de Custo',
             'Categoria',
@@ -781,7 +781,7 @@ class DataProcessor {
 
     import(input) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'import_payments')) {
-            alert('Você não tem permissão para importar o fluxo de pagamentos.');
+            alert('VocÃª nÃ£o tem permissÃ£o para importar o fluxo de pagamentos.');
             input.value = '';
             return;
         }
@@ -804,14 +804,14 @@ class DataProcessor {
 
                 console.log('Linhas lidas do Excel:', rows);
 
-                // ETL: Mapeamento conforme código Conta Azul original
-                // Identificar headers disponíveis
+                // ETL: Mapeamento conforme cÃ³digo Conta Azul original
+                // Identificar headers disponÃ­veis
                 const headers = Object.keys(rows[0] || {});
-                const possiveisDescricoes = ["Descrição", "Historico", "Histórico", "Observação", "Observacao", "Memo"];
+                const possiveisDescricoes = ["DescriÃ§Ã£o", "Historico", "HistÃ³rico", "ObservaÃ§Ã£o", "Observacao", "Memo"];
                 let campoDescricao = possiveisDescricoes.find(c => headers.includes(c));
 
                 console.log('Headers encontrados:', headers);
-                console.log('Campo de descrição identificado:', campoDescricao);
+                console.log('Campo de descriÃ§Ã£o identificado:', campoDescricao);
 
                 const newPayments = rows.map(r => {
                     const descricao = campoDescricao ? (r[campoDescricao]?.trim() || "") : "";
@@ -842,7 +842,7 @@ class DataProcessor {
                 console.log('DMF_CONTEXT after import:', window.DMF_CONTEXT);
                 this.syncImportToBackend().catch(() => {});
                 this.core.ui.renderPaymentsTable();
-                this.core.audit.log('IMPORTAÇÃO', `Importado arquivo com ${newPayments.length} registros.`);
+                this.core.audit.log('IMPORTAÃ‡ÃƒO', `Importado arquivo com ${newPayments.length} registros.`);
             } catch (error) {
                 console.error('Erro ao processar arquivo Excel:', error);
                 alert('Erro ao processar o arquivo. Verifique o console para detalhes.');
@@ -859,21 +859,21 @@ class DataProcessor {
 
     async sign(id) { // ALTERADO
         if (!this.core.currentUser) {
-            alert('Você precisa estar logado para assinar pagamentos.');
+            alert('VocÃª precisa estar logado para assinar pagamentos.');
             return false;
         }
         if (!this.core.admin.hasPermission(this.core.currentUser, 'sign_payments')) {
-            alert('Você não tem permissão para assinar pagamentos.');
+            alert('VocÃª nÃ£o tem permissÃ£o para assinar pagamentos.');
             return false;
         }
         const idx = this.records.findIndex(r => r.id === id);
         if (idx === -1) return false; // ALTERADO
         const r = this.records[idx];
         if (!this.core.admin.canSignCenter(this.core.currentUser, r.centro)) {
-            alert('Você não tem permissão para assinar este centro de custo.');
+            alert('VocÃª nÃ£o tem permissÃ£o para assinar este centro de custo.');
             return false;
         }
-        if (r.assinatura) return true; // já assinado // ALTERADO
+        if (r.assinatura) return true; // jÃ¡ assinado // ALTERADO
 
         const u = this.core.currentUser || {};
         const nomeSeguro = (value) => {
@@ -886,7 +886,7 @@ class DataProcessor {
             const usuario = nomeSeguro(u.usuario || u.username);
             if (usuario) return usuario;
             const email = nomeSeguro(u.email);
-            return email || 'Usuário';
+            return email || 'UsuÃ¡rio';
         })();
         const usuarioNome = displayName; // ALTERADO
         const dataISO = new Date().toISOString(); // ALTERADO
@@ -931,7 +931,7 @@ class DataProcessor {
                 body: JSON.stringify({ assinatura: r.assinatura, company: this.currentCompany })
             });
             if (response.status === 409) {
-                showToast('Pagamento já foi assinado por outro usuário.', 'warn');
+                showToast('Pagamento jÃ¡ foi assinado por outro usuÃ¡rio.', 'warn');
                 await this.loadFromBackend(true, this.currentCompany);
                 this.core?.ui?.renderPaymentsTable?.();
                 return false;
@@ -944,7 +944,7 @@ class DataProcessor {
             this.core.sync.enqueue({ type: 'sign', data: { id, assinatura: r.assinatura, company: this.currentCompany } });
         }
 
-        try { // manter telemetria/contexto, sem quebrar se não existir
+        try { // manter telemetria/contexto, sem quebrar se nÃ£o existir
             if (window.DMF_CONTEXT) {
                 window.DMF_CONTEXT.pagamentos = this.records;
                 window.DMF_CONTEXT.assinaturas = this.records.filter(x => x.assinatura);
@@ -955,7 +955,7 @@ class DataProcessor {
             }
         } catch(e) { console.warn('sync ctx/brain falhou', e); } // ALTERADO
 
-        // Auditoria e evento (se disponíveis)
+        // Auditoria e evento (se disponÃ­veis)
             this.core?.audit?.log?.('ASSINATURA', `Pagamento ${r.fornecedor} assinado por ${usuarioNome}`, 'assinatura', id); // ALTERADO
         try { registrarEvento('pagamento_assinado', this.core.currentUser, `Assinado: ${r.fornecedor}`, 'pagamento'); } catch(_) {} // ALTERADO
 
@@ -969,7 +969,7 @@ class DataProcessor {
     }
 
     async syncImportToBackend() {
-        setFlowSyncStatus('Sincronizando importação...', 'info');
+        setFlowSyncStatus('Sincronizando importaÃ§Ã£o...', 'info');
         try {
             const response = await fetch(`${getApiBase()}/api/flow-payments/import?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
@@ -982,25 +982,25 @@ class DataProcessor {
             });
             if (!response.ok) {
                 if (response.status === 401) {
-                    alert('Sessão expirada. Faça login novamente para sincronizar o fluxo.');
-                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    alert('SessÃ£o expirada. FaÃ§a login novamente para sincronizar o fluxo.');
+                    setFlowSyncStatus('SessÃ£o expirada. FaÃ§a login novamente.', 'warn');
                     try { hardLogout(); } catch (_) {}
                 }
                 if (response.status === 403) {
-                    alert('Sem permissão para sincronizar o fluxo.');
-                    setFlowSyncStatus('Sem permissão para sincronizar o fluxo.', 'warn');
+                    alert('Sem permissÃ£o para sincronizar o fluxo.');
+                    setFlowSyncStatus('Sem permissÃ£o para sincronizar o fluxo.', 'warn');
                 }
                 console.warn('Flow payments import failed:', response.status);
                 if (response.status !== 401 && response.status !== 403) {
-                    setFlowSyncStatus('Falha ao sincronizar importação.', 'error');
+                    setFlowSyncStatus('Falha ao sincronizar importaÃ§Ã£o.', 'error');
                 }
                 this.core.sync.enqueue({ type: 'import', data: { company: this.currentCompany, payments: this.records } });
                 return;
             }
-            setFlowSyncStatus(`Importação sincronizada às ${formatTimeNow()}`, 'ok');
+            setFlowSyncStatus(`ImportaÃ§Ã£o sincronizada Ã s ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payments import unavailable:', error.message);
-            setFlowSyncStatus('Servidor indisponível para importação.', 'error');
+            setFlowSyncStatus('Servidor indisponÃ­vel para importaÃ§Ã£o.', 'error');
             this.core.sync.enqueue({ type: 'import', data: { company: this.currentCompany, payments: this.records } });
         }
     }
@@ -1039,7 +1039,7 @@ class DataProcessor {
     
     export(companyFilter = null) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
-            alert('Você não tem permissão para exportar o fluxo de pagamentos.');
+            alert('VocÃª nÃ£o tem permissÃ£o para exportar o fluxo de pagamentos.');
             return;
         }
         const maxExportRows = 2000;
@@ -1063,9 +1063,9 @@ class DataProcessor {
 
         const totalCount = filtered.length;
         if (totalCount > maxExportRows && !isAdmin) {
-            alert(`Exportação bloqueada: limite de ${maxExportRows} registros. Contate o admin.`);
+            alert(`ExportaÃ§Ã£o bloqueada: limite de ${maxExportRows} registros. Contate o admin.`);
             try {
-                this.core.audit.log('EXPORTAÇÃO BLOQUEADA', `Tentativa de exportar ${totalCount} registros (limite ${maxExportRows}).`);
+                this.core.audit.log('EXPORTAÃ‡ÃƒO BLOQUEADA', `Tentativa de exportar ${totalCount} registros (limite ${maxExportRows}).`);
                 fetch(`${getApiBase()}/api/audit/events`, {
                     method: 'POST',
                     headers: {
@@ -1082,7 +1082,7 @@ class DataProcessor {
             return;
         }
         if (totalCount > maxExportRows && isAdmin) {
-            const ok = confirm(`Você está prestes a exportar ${totalCount} registros. Deseja continuar?`);
+            const ok = confirm(`VocÃª estÃ¡ prestes a exportar ${totalCount} registros. Deseja continuar?`);
             if (!ok) return;
         }
 
@@ -1100,7 +1100,7 @@ class DataProcessor {
             }
         };
         try {
-            this.core.audit.log('EXPORTAÇÃO', `Exportado ${totalCount} registros (${exportMeta.company}).`);
+            this.core.audit.log('EXPORTAÃ‡ÃƒO', `Exportado ${totalCount} registros (${exportMeta.company}).`);
             fetch(`${getApiBase()}/api/audit/events`, {
                 method: 'POST',
                 headers: {
@@ -1114,11 +1114,11 @@ class DataProcessor {
                 })
             }).catch(() => {});
         } catch (_) {}
-        // Preparar dados para exportação na ordem da tabela
+        // Preparar dados para exportaÃ§Ã£o na ordem da tabela
         const header = [
             'Fornecedor',
             'Data',
-            'Descrição',
+            'DescriÃ§Ã£o',
             'Valor',
             'Categoria',
             'Centro de Custo',
@@ -1171,7 +1171,7 @@ class DataProcessor {
                 aoa.push(row);
             };
 
-            pushMemoryRow('Memória de calculos');
+            pushMemoryRow('MemÃ³ria de calculos');
             companies.forEach((company) => {
                 const entry = totalsByCompany[company];
                 pushMemoryRow(company, `R$ ${entry.total.toLocaleString('pt-BR')}`);
@@ -1191,7 +1191,7 @@ class DataProcessor {
     }
 
     clearAll() {
-        if (confirm('Tem certeza que deseja remover todo o fluxo de pagamentos? Esta ação não pode ser desfeita.')) {
+        if (confirm('Tem certeza que deseja remover todo o fluxo de pagamentos? Esta aÃ§Ã£o nÃ£o pode ser desfeita.')) {
             this.records = [];
             this.save();
             window.DMF_CONTEXT.pagamentos = this.records;
@@ -1204,7 +1204,7 @@ class DataProcessor {
         }
     }
 
-    // === Utilitários para Centros de Custo === // ALTERADO
+    // === UtilitÃ¡rios para Centros de Custo === // ALTERADO
     _norm(s){ return String(s||'').trim(); } // ALTERADO
     _key(s){ return this._norm(s).toLowerCase(); } // ALTERADO
     _dedupCaseInsensitive(arr){ // ALTERADO
@@ -1239,14 +1239,14 @@ class DataProcessor {
             DMF: [
                 'Reisolamento Campina Grande',
                 'Reisolamento Natal',
-                'Administração Central',
-                'Administração Central ADJ',
+                'AdministraÃ§Ã£o Central',
+                'AdministraÃ§Ã£o Central ADJ',
                 'Despesas Pessoais',
-                'Manutenção Civil Sede e Subestação',
-                'Manutenção Civil AL/PE',
-                'Manutenção Civil Bahia',
+                'ManutenÃ§Ã£o Civil Sede e SubestaÃ§Ã£o',
+                'ManutenÃ§Ã£o Civil AL/PE',
+                'ManutenÃ§Ã£o Civil Bahia',
             ],
-            'Real Energy': ['Campos Novos', 'Vitória da Conquista']
+            'Real Energy': ['Campos Novos', 'VitÃ³ria da Conquista']
         };
     }
 
@@ -1360,7 +1360,7 @@ class DataProcessor {
             valor: Math.abs(Number(valor) || 0), // ALTERADO
             centro: (centro || '').trim(), // ALTERADO
             categoria: (categoria || '').trim(),
-            assinatura: null, // começa Pendente por regra do sistema // ALTERADO
+            assinatura: null, // comeÃ§a Pendente por regra do sistema // ALTERADO
             timestamp: new Date().toISOString() // ALTERADO
         };
         this.records.push(record); // ALTERADO
@@ -1369,7 +1369,7 @@ class DataProcessor {
         this.save(); // ALTERADO
         this.syncPaymentToBackend(record).catch(() => {});
 
-        // Manter contextos em sincronia (com segurança) // ALTERADO
+        // Manter contextos em sincronia (com seguranÃ§a) // ALTERADO
         try { if (window.DMF_CONTEXT) {
             window.DMF_CONTEXT.pagamentos = this.records;
             window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
@@ -1380,7 +1380,7 @@ class DataProcessor {
         }} catch(e) { console.warn('brain update falhou', e); } // ALTERADO
 
         this.core.ui.renderPaymentsTable(); // ALTERADO
-        this.core.audit.log('INSERÇÃO MANUAL', `Pagamento criado: ${record.fornecedor} - R$ ${record.valor}`, 'pagamento', record.id); // ALTERADO
+        this.core.audit.log('INSERÃ‡ÃƒO MANUAL', `Pagamento criado: ${record.fornecedor} - R$ ${record.valor}`, 'pagamento', record.id); // ALTERADO
         try { registrarEvento('pagamento_adicionado', this.core.currentUser, `Pagamento ${record.fornecedor} adicionado`); } catch(_) {} // ALTERADO
 
         return record; // ALTERADO
@@ -1400,13 +1400,13 @@ class DataProcessor {
             });
             if (!response.ok) {
                 if (response.status === 401) {
-                    alert('Sessão expirada. Faça login novamente para sincronizar o pagamento.');
-                    setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
+                    alert('SessÃ£o expirada. FaÃ§a login novamente para sincronizar o pagamento.');
+                    setFlowSyncStatus('SessÃ£o expirada. FaÃ§a login novamente.', 'warn');
                     try { hardLogout(); } catch (_) {}
                 }
                 if (response.status === 403) {
-                    alert('Sem permissão para sincronizar o pagamento.');
-                    setFlowSyncStatus('Sem permissão para sincronizar o pagamento.', 'warn');
+                    alert('Sem permissÃ£o para sincronizar o pagamento.');
+                    setFlowSyncStatus('Sem permissÃ£o para sincronizar o pagamento.', 'warn');
                 }
                 console.warn('Flow payment create failed:', response.status);
                 if (response.status !== 401 && response.status !== 403) {
@@ -1415,16 +1415,16 @@ class DataProcessor {
                 this.core.sync.enqueue({ type: 'upsert', data: { ...record, company: this.currentCompany } });
                 return;
             }
-            setFlowSyncStatus(`Pagamento sincronizado às ${formatTimeNow()}`, 'ok');
+            setFlowSyncStatus(`Pagamento sincronizado Ã s ${formatTimeNow()}`, 'ok');
         } catch (error) {
             console.warn('Flow payment create unavailable:', error.message);
-            setFlowSyncStatus('Servidor indisponível para pagamento.', 'error');
+            setFlowSyncStatus('Servidor indisponÃ­vel para pagamento.', 'error');
             this.core.sync.enqueue({ type: 'upsert', data: { ...record, company: this.currentCompany } });
         }
     }
 
     syncFromAPI() {
-        alert('Sincronização com Conta Azul desativada temporariamente. Use a importação manual.');
+        alert('SincronizaÃ§Ã£o com Conta Azul desativada temporariamente. Use a importaÃ§Ã£o manual.');
         return;
         const apiBase = getApiBase();
         fetch(`${apiBase}/api/payments`, {
@@ -1466,8 +1466,8 @@ class DataProcessor {
                 console.log('DMF_CONTEXT after syncFromAPI:', window.DMF_CONTEXT);
 
                 this.core.ui.renderPaymentsTable();
-                this.core.audit.log('SINCRONIZAÇÃO API', `Sincronizados ${newPayments.length} pagamentos da API Conta Azul.`);
-                alert(`Sincronização concluída! ${newPayments.length} pagamentos importados da API Conta Azul.`);
+                this.core.audit.log('SINCRONIZAÃ‡ÃƒO API', `Sincronizados ${newPayments.length} pagamentos da API Conta Azul.`);
+                alert(`SincronizaÃ§Ã£o concluÃ­da! ${newPayments.length} pagamentos importados da API Conta Azul.`);
             })
             .catch(error => {
                 console.error('Erro ao sincronizar com API Conta Azul:', error);
@@ -1521,8 +1521,8 @@ class DataProcessor {
                 console.log('DMF_CONTEXT after syncFromCobliAPI:', window.DMF_CONTEXT);
 
                 this.core.ui.renderPaymentsTable();
-                this.core.audit.log('SINCRONIZAÇÃO COBLI', `Sincronizados ${newPayments.length} pagamentos da API Cobli.`);
-                alert(`Sincronização Cobli concluída! ${newPayments.length} pagamentos importados da API Cobli.`);
+                this.core.audit.log('SINCRONIZAÃ‡ÃƒO COBLI', `Sincronizados ${newPayments.length} pagamentos da API Cobli.`);
+                alert(`SincronizaÃ§Ã£o Cobli concluÃ­da! ${newPayments.length} pagamentos importados da API Cobli.`);
             })
             .catch(error => {
                 console.error('Erro ao sincronizar com API Cobli:', error);
@@ -1555,14 +1555,14 @@ class UIManager {
         if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             this.showAccessDenied({
                 title: 'Acesso negado',
-                message: 'Você não tem permissão para acessar a aba Administração. Peça ao administrador para liberar o acesso.'
+                message: 'VocÃª nÃ£o tem permissÃ£o para acessar a aba AdministraÃ§Ã£o. PeÃ§a ao administrador para liberar o acesso.'
             }, activeButton);
             return;
         }
         if (viewId === 'audit' && !this.core.admin.hasPermission(this.core.currentUser, 'audit_access')) {
             this.showAccessDenied({
                 title: 'Acesso negado',
-                message: 'Você não tem permissão para acessar os Logs de Auditoria. Peça ao administrador para liberar o acesso.'
+                message: 'VocÃª nÃ£o tem permissÃ£o para acessar os Logs de Auditoria. PeÃ§a ao administrador para liberar o acesso.'
             }, activeButton);
             return;
         }
@@ -1627,7 +1627,7 @@ class UIManager {
         if (activeButton) activeButton.classList.add('active');
 
         const safeTitle = String(title || 'Acesso negado');
-        const safeMsg = String(message || 'Você não tem permissão para acessar esta aba.');
+        const safeMsg = String(message || 'VocÃª nÃ£o tem permissÃ£o para acessar esta aba.');
         view.innerHTML = `
             <div class="access-denied-wrap">
                 <div class="access-denied-card">
@@ -1804,10 +1804,10 @@ class UIManager {
                 if (diffMs >= 0 && diffMs <= 5000) {
                     lastSyncEl.textContent = 'Atualizado agora';
                 } else {
-                    lastSyncEl.textContent = `Última sincronização: ${new Date(this.core.data.lastSyncAt).toLocaleTimeString('pt-BR')}`;
+                    lastSyncEl.textContent = `Ãšltima sincronizaÃ§Ã£o: ${new Date(this.core.data.lastSyncAt).toLocaleTimeString('pt-BR')}`;
                 }
             } else {
-                lastSyncEl.textContent = 'Última sincronização: —';
+                lastSyncEl.textContent = 'Ãšltima sincronizaÃ§Ã£o: â€”';
             }
         }
         if (lastSigEl) {
@@ -1816,9 +1816,9 @@ class UIManager {
                 .sort((a, b) => new Date(b.assinatura.dataISO) - new Date(a.assinatura.dataISO))[0];
             if (latest?.assinatura) {
                 const when = new Date(latest.assinatura.dataISO).toLocaleString('pt-BR');
-                lastSigEl.textContent = `Última assinatura: ${latest.assinatura.usuarioNome} (${when})`;
+                lastSigEl.textContent = `Ãšltima assinatura: ${latest.assinatura.usuarioNome} (${when})`;
             } else {
-                lastSigEl.textContent = 'Última assinatura: —';
+                lastSigEl.textContent = 'Ãšltima assinatura: â€”';
             }
         }
     }
@@ -1828,7 +1828,7 @@ class UIManager {
         document.getElementById('appSection').classList.remove('hidden');
         const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
         if (this.core.currentUser) this.core.currentUser.cargo = role;
-        document.getElementById('userRoleBadge').innerText = (role || '—').toUpperCase();
+        document.getElementById('userRoleBadge').innerText = (role || 'â€”').toUpperCase();
 
         this.companyFilter = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
         this.setCompanyFilter(this.companyFilter);
@@ -1966,7 +1966,7 @@ class UIManager {
             try {
                 const response = await fetch(`${getApiBase()}/api/health`, { method: 'GET', cache: 'no-store' });
                 if (!response.ok) {
-                    setBackendStatus('Servidor: indisponível', 'error');
+                    setBackendStatus('Servidor: indisponÃ­vel', 'error');
                     return;
                 }
                 const data = await response.json();
@@ -1976,7 +1976,7 @@ class UIManager {
                 }
                 setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
             } catch (_) {
-                setBackendStatus('Servidor: indisponível', 'error');
+                setBackendStatus('Servidor: indisponÃ­vel', 'error');
             }
         };
         check();
@@ -1991,7 +1991,7 @@ class UIManager {
                 setBackendStatus('Servidor: offline', 'error');
                 const el = document.getElementById('sessionStatus');
                 if (el) {
-                    el.textContent = 'Sessão: offline';
+                    el.textContent = 'SessÃ£o: offline';
                     el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
                     el.classList.add('is-error');
                 }
@@ -2001,7 +2001,7 @@ class UIManager {
             const el = document.getElementById('sessionStatus');
             if (!el) return;
             if (!payload?.exp) {
-                el.textContent = 'Sessão: ativa';
+                el.textContent = 'SessÃ£o: ativa';
                 el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
                 el.classList.add('is-ok');
                 return;
@@ -2009,14 +2009,14 @@ class UIManager {
             const expMs = payload.exp * 1000;
             const remaining = expMs - Date.now();
             if (remaining <= 0) {
-                el.textContent = 'Sessão: expirada';
+                el.textContent = 'SessÃ£o: expirada';
                 el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
                 el.classList.add('is-error');
                 return;
             }
             const minutes = Math.floor(remaining / 60000);
             const seconds = Math.floor((remaining % 60000) / 1000);
-            el.textContent = `Sessão: expira em ${minutes}m ${seconds}s`;
+            el.textContent = `SessÃ£o: expira em ${minutes}m ${seconds}s`;
             el.classList.remove('is-ok', 'is-warn', 'is-error', 'is-info');
             if (minutes < 5) {
                 el.classList.add('is-warn');
@@ -2090,13 +2090,13 @@ class UIManager {
         if (currentView === 'admin' && !isAdminAccess) {
             this.showAccessDenied({
                 title: 'Acesso negado',
-                message: 'Você não tem permissão para acessar a aba Administração.'
+                message: 'VocÃª nÃ£o tem permissÃ£o para acessar a aba AdministraÃ§Ã£o.'
             }, document.querySelector('[data-nav="dashboard"]'));
         }
         if (currentView === 'audit' && !canAudit) {
             this.showAccessDenied({
                 title: 'Acesso negado',
-                message: 'Você não tem permissão para acessar os Logs de Auditoria.'
+                message: 'VocÃª nÃ£o tem permissÃ£o para acessar os Logs de Auditoria.'
             }, document.querySelector('[data-nav="dashboard"]'));
         }
         const historyBtn = document.querySelector('[data-payments-tab="history"]');
@@ -2265,7 +2265,7 @@ class UIManager {
         if (tab === 'logins' && !this.core.admin.hasPermission(this.core.currentUser, 'audit_login_access')) {
             this.showAccessDenied({
                 title: 'Acesso negado',
-                message: 'Você não tem permissão para acessar os logs de acesso (logins). Peça ao administrador para liberar o acesso.'
+                message: 'VocÃª nÃ£o tem permissÃ£o para acessar os logs de acesso (logins). PeÃ§a ao administrador para liberar o acesso.'
             }, document.querySelector('[data-nav="audit"]'));
             return;
         }
@@ -2400,7 +2400,6 @@ class UIManager {
         body.innerHTML = `
             <table>
                 <thead>
-                    <tr><th>Nome</th><th>Usuário</th><th>Email</th><th>Cargo</th><th>Ações</th></tr>
                 </thead>
                 <tbody>
                     ${this.core.admin.users.map(u => `
@@ -2412,7 +2411,7 @@ class UIManager {
                             <td>
                                 <button class="btn btn-ghost" data-user-action="edit" data-user-id="${u.id}">Editar</button>
                                 <button class="btn btn-ghost" data-user-action="change-password" data-user-id="${u.id}">Trocar Senha</button>
-                                <button class="btn btn-ghost" data-user-action="revoke-session" data-user-id="${u.id}">Revogar Sessão</button>
+                                <button class="btn btn-ghost" data-user-action="revoke-session" data-user-id="${u.id}">Revogar SessÃ£o</button>
                                 <button class="btn btn-danger" data-user-action="delete" data-user-id="${u.id}">Excluir</button>
                             </td>
                         </tr>
@@ -2447,7 +2446,6 @@ class UIManager {
         body.innerHTML = `
             <table>
                 <thead>
-                    <tr><th>Cargo</th><th>Permissões</th><th>Ações</th></tr>
                 </thead>
                 <tbody>
                     ${this.core.admin.roles.map(r => `
@@ -2485,13 +2483,13 @@ class UIManager {
 
     formatPermissionsForDisplay(permissions) {
         const list = Array.isArray(permissions) ? permissions : [];
-        if (!list.length) return 'Sem permissões';
+        if (!list.length) return 'Sem permissÃµes';
         return list.map((permission) => this.formatPermissionLabel(permission)).join(', ');
     }
 
     formatPermissionLabel(permission) {
         const raw = String(permission || '').trim();
-        if (!raw) return 'Permissão inválida';
+        if (!raw) return 'PermissÃ£o invÃ¡lida';
         const normalized = raw.toLowerCase().replace(/\s+/g, '_');
         const aliases = {
             audit_acess: 'audit_access',
@@ -2499,7 +2497,7 @@ class UIManager {
         };
         const key = aliases[normalized] || normalized;
         const labels = {
-            all: 'Todas as permissões',
+            all: 'Todas as permissÃµes',
             sign_payments: 'Assinar pagamentos',
             import_payments: 'Importar pagamentos',
             export_payments: 'Exportar pagamentos',
@@ -2510,13 +2508,13 @@ class UIManager {
             delete_archive: 'Excluir fluxos anteriores',
             export_archives: 'Exportar fluxos anteriores',
             compare_archives: 'Comparar fluxos anteriores',
-            admin_access: 'Acessar administração',
+            admin_access: 'Acessar administraÃ§Ã£o',
             audit_access: 'Acessar auditoria',
             audit_login_access: 'Ver logs de acesso',
             roles_manage: 'Gerenciar cargos',
-            user_manage: 'Gerenciar usuários',
-            backup_restore: 'Backup e restauração',
-            revoke_sessions: 'Revogar sessões'
+            user_manage: 'Gerenciar usuÃ¡rios',
+            backup_restore: 'Backup e restauraÃ§Ã£o',
+            revoke_sessions: 'Revogar sessÃµes'
         };
         return labels[key] || raw;
     }
@@ -2544,7 +2542,7 @@ class UIManager {
                     <div class="center-card-header">
                         <div>
                             <div class="center-user-name">${u.nome}</div>
-                            <div class="center-user-meta">${u.email} • ${String(u.cargo || '').toUpperCase()}</div>
+                            <div class="center-user-meta">${u.email} â€¢ ${String(u.cargo || '').toUpperCase()}</div>
                         </div>
                         <button class="btn btn-ghost" data-cc-action="toggle">Editar</button>
                     </div>
@@ -2590,7 +2588,7 @@ class UIManager {
                     const selected = Array.from(card.querySelectorAll('input[type="checkbox"][data-center-name]:checked'))
                         .map(i => i.getAttribute('data-center-name'));
                     this.core.admin.setUserCenterRule(userId, { mode, centers: selected });
-                    showToast('Permissões de centros atualizadas.', 'success');
+                    showToast('PermissÃµes de centros atualizadas.', 'success');
                     editor?.classList.add('hidden');
                 }
             });
@@ -2675,7 +2673,7 @@ class UIManager {
     async saveAllCenterCompanies() {
         const items = Array.from(this.pendingCenterCompanyUpdates.values());
         if (!items.length) {
-            showToast('Nenhuma alteração pendente.', 'info');
+            showToast('Nenhuma alteraÃ§Ã£o pendente.', 'info');
             return;
         }
         try {
@@ -2732,14 +2730,14 @@ class UIManager {
             const items = Object.entries(companyTotals).map(([name, value]) => `
                 <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
             `).join('');
-            companyList.innerHTML = items || '<div>Nenhum dado no período.</div>';
+            companyList.innerHTML = items || '<div>Nenhum dado no perÃ­odo.</div>';
         }
         if (costList) {
             const sorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 8);
             const items = sorted.map(([name, value]) => `
                 <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
             `).join('');
-            costList.innerHTML = items || '<div>Nenhum dado no período.</div>';
+            costList.innerHTML = items || '<div>Nenhum dado no perÃ­odo.</div>';
         }
 
         const budgets = this.loadBudgets();
@@ -2748,13 +2746,13 @@ class UIManager {
         const budgetReal = Number(budgets['Real Energy']) || 0;
         const alerts = [];
         if (budgetDMF > 0 && companyTotals.DMF > budgetDMF) {
-            alerts.push(`DMF excedeu o orçamento: R$ ${companyTotals.DMF.toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
+            alerts.push(`DMF excedeu o orÃ§amento: R$ ${companyTotals.DMF.toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
         }
         if (budgetJFX > 0 && companyTotals.JFX > budgetJFX) {
-            alerts.push(`JFX excedeu o orçamento: R$ ${companyTotals.JFX.toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
+            alerts.push(`JFX excedeu o orÃ§amento: R$ ${companyTotals.JFX.toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
         }
         if (budgetReal > 0 && companyTotals['Real Energy'] > budgetReal) {
-            alerts.push(`Real Energy excedeu o orçamento: R$ ${companyTotals['Real Energy'].toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
+            alerts.push(`Real Energy excedeu o orÃ§amento: R$ ${companyTotals['Real Energy'].toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
         }
         const alertBox = document.getElementById('budgetAlerts');
         if (alertBox) {
@@ -2764,7 +2762,7 @@ class UIManager {
                 this.notifyBudgetExceeded({ monthKey, alerts });
             } else {
                 alertBox.classList.add('ok');
-                alertBox.textContent = 'Dentro do orçamento configurado.';
+                alertBox.textContent = 'Dentro do orÃ§amento configurado.';
             }
         }
     }
@@ -2886,13 +2884,13 @@ class UIManager {
         if (resultsEl) resultsEl.textContent = `Mostrando ${filtered.length} de ${totalCount}`;
         if (rangeEl) {
             if (filterState.startValue && filterState.endValue) {
-                rangeEl.textContent = `Período: ${filterState.startValue} → ${filterState.endValue}`;
+                rangeEl.textContent = `PerÃ­odo: ${filterState.startValue} â†’ ${filterState.endValue}`;
             } else if (filterState.startValue) {
                 rangeEl.textContent = `Desde ${filterState.startValue}`;
             } else if (filterState.endValue) {
-                rangeEl.textContent = `Até ${filterState.endValue}`;
+                rangeEl.textContent = `AtÃ© ${filterState.endValue}`;
             } else {
-                rangeEl.textContent = 'Todos os períodos';
+                rangeEl.textContent = 'Todos os perÃ­odos';
             }
         }
     }
@@ -2910,7 +2908,7 @@ class UIManager {
         this.updateArchiveSummary(filtered, filterState, archives.length);
 
         if (!archives.length) {
-            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponível. Arquive o fluxo atual para começar.</div>`;
+            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo anterior disponÃ­vel. Arquive o fluxo atual para comeÃ§ar.</div>`;
             const detail = document.getElementById('flowArchiveDetail');
             if (detail) detail.innerHTML = '';
             this.renderArchiveCompareOptions([]);
@@ -2918,7 +2916,7 @@ class UIManager {
         }
 
         if (!filtered.length) {
-            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo encontrado com os filtros atuais. Ajuste a busca ou o período.</div>`;
+            list.innerHTML = `<div class="flow-archive-empty">Nenhum fluxo encontrado com os filtros atuais. Ajuste a busca ou o perÃ­odo.</div>`;
             const detail = document.getElementById('flowArchiveDetail');
             if (detail) detail.innerHTML = '';
             this.renderArchiveCompareOptions([]);
@@ -2942,9 +2940,9 @@ class UIManager {
 
         list.innerHTML = filtered.map(item => {
             const archive = item.archive;
-            const createdAt = item.createdAt ? item.createdAt.toLocaleString('pt-BR') : 'Data não informada';
-            const company = archive.company ? `Empresa: ${archive.company}` : 'Empresa não informada';
-            const createdBy = archive.created_by ? `Criado por ${archive.created_by}` : 'Criador não informado';
+            const createdAt = item.createdAt ? item.createdAt.toLocaleString('pt-BR') : 'Data nÃ£o informada';
+            const company = archive.company ? `Empresa: ${archive.company}` : 'Empresa nÃ£o informada';
+            const createdBy = archive.created_by ? `Criado por ${archive.created_by}` : 'Criador nÃ£o informado';
             const pending = Math.max(item.stats.count - item.stats.signed, 0);
             const isActive = this.selectedArchiveId === archive.id;
             const isNewest = newestId && archive.id === newestId;
@@ -2959,7 +2957,7 @@ class UIManager {
                             <button class="archive-expand-toggle" type="button" data-archive-toggle="${archive.id}" aria-label="${isCollapsed ? 'Expandir fluxo' : 'Recolher fluxo'}">${isCollapsed ? '&#9656;' : '&#9662;'}</button>
                         </span>
                     </div>
-                    <div class="flow-archive-meta">${company} • ${createdBy}</div>
+                    <div class="flow-archive-meta">${company} â€¢ ${createdBy}</div>
                     <div class="flow-archive-meta">${createdAt}</div>
                     <div class="flow-archive-total">R$ ${item.stats.total.toLocaleString('pt-BR')}</div>
                     <div class="flow-archive-tags">
@@ -3061,14 +3059,14 @@ class UIManager {
         const deltaCount = statsB.count - statsA.count;
         const deltaSigned = statsB.signed - statsA.signed;
         result.innerHTML = `
-            <strong>Comparação</strong><br>
+            <strong>ComparaÃ§Ã£o</strong><br>
             A: ${a.label}<br>
             B: ${b.label}<br><br>
             Total A: R$ ${statsA.total.toLocaleString('pt-BR')}<br>
             Total B: R$ ${statsB.total.toLocaleString('pt-BR')}<br>
-            Diferença Total (B - A): R$ ${deltaTotal.toLocaleString('pt-BR')}<br><br>
-            Registros A: ${statsA.count} | B: ${statsB.count} | Diferença: ${deltaCount}<br>
-            Assinados A: ${statsA.signed} | B: ${statsB.signed} | Diferença: ${deltaSigned}
+            DiferenÃ§a Total (B - A): R$ ${deltaTotal.toLocaleString('pt-BR')}<br><br>
+            Registros A: ${statsA.count} | B: ${statsB.count} | DiferenÃ§a: ${deltaCount}<br>
+            Assinados A: ${statsA.signed} | B: ${statsB.signed} | DiferenÃ§a: ${deltaSigned}
         `;
     }
     renderFlowArchiveDetail(archive) {
@@ -3092,9 +3090,9 @@ class UIManager {
                 <td>${p.centro || ''}</td>
                 <td>${p.categoria || ''}</td>
                 <td>${p.assinatura ? 'Assinado' : 'Pendente'}</td>
+                <td>${(!p.assinatura && canSignArchive) ? `<button class="btn btn-primary btn-compact" data-archive-sign="${archive.id}" data-payment-id="${p.id}">Assinar</button>` : (p.assinatura ? '-' : 'Sem permissao')}</td>
                 <td>${p.assinatura ? `Assinado por ${p.assinatura.usuarioNome}` : '-'}</td>
                 <td>${p.assinatura?.hash || '-'}</td>
-                <td>${(!p.assinatura && canSignArchive) ? `<button class="btn btn-primary btn-compact" data-archive-sign="${archive.id}" data-payment-id="${p.id}">Assinar</button>` : '-'}</td>
             </tr>
         `).join('');
 
@@ -3112,14 +3110,14 @@ class UIManager {
                         <tr>
                             <th>Fornecedor</th>
                             <th>Data</th>
-                            <th>Descrição</th>
+                            <th>DescriÃ§Ã£o</th>
                             <th>Valor</th>
                             <th>Centro de Custo</th>
                             <th>Categoria</th>
                             <th>Status</th>
+                            <th>AÃ§Ãµes</th>
                             <th>Assinatura</th>
                             <th>ID da Assinatura</th>
-                            <th>Ações</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -3257,7 +3255,7 @@ class UIManager {
     } // ALTERADO
 
     createUser() {
-        const nome = prompt('Nome do usuário:');
+        const nome = prompt('Nome do usuÃ¡rio:');
         const username = prompt('Username:');
         const email = prompt('Email:');
         const password = prompt('Senha:');
@@ -3314,7 +3312,7 @@ class UIManager {
             this.renderUsersTable();
             form.reset();
         } else {
-            alert('Por favor, preencha todos os campos obrigatórios.');
+            alert('Por favor, preencha todos os campos obrigatÃ³rios.');
         }
     }
 
@@ -3330,7 +3328,7 @@ class UIManager {
             return;
         }
         if (newPassword !== confirmPassword) {
-            alert('As senhas não coincidem.');
+            alert('As senhas nÃ£o coincidem.');
             return;
         }
         await this.core.admin.updateUser(id, { senha: newPassword });
@@ -3344,7 +3342,7 @@ class UIManager {
         const role = this.core.admin.roles.find(r => r.id === id);
         if(!role) return;
         const name = prompt('Nome do cargo:', role.name);
-        const permissions = prompt('Permissões (separadas por vírgula):', role.permissions.join(', '));
+        const permissions = prompt('PermissÃµes (separadas por vÃ­rgula):', role.permissions.join(', '));
         if(name && permissions) {
             this.core.admin.updateRole(id, { name, permissions: permissions.split(',').map(p => p.trim()) });
             this.renderRolesTable();
@@ -3379,7 +3377,7 @@ class UIManager {
         const canSignCenter = this.core.admin.canSignCenter(this.core.currentUser, p.centro);
         const acoesHtml = p.assinatura
             ? '<span>Assinado</span>' // manter simples, sem CSS novo // ALTERADO
-            : (canSign && canSignCenter ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : '—'); // ALTERADO
+            : (canSign && canSignCenter ? `<button class="btn btn-primary" data-payment-action="sign" data-payment-id="${p.id}">Assinar</button>` : 'â€”'); // ALTERADO
             const qrHtml = (canSeeQr && p.assinatura?.hash)
                 ? `<a class="btn btn-ghost btn-verify" href="${publicBase}${p.assinatura.hash}" target="_blank" rel="noopener">Verificar</a>`
                 : '';
@@ -3389,9 +3387,9 @@ class UIManager {
                 <tr class="${rowClass}">
                     <td><strong>${p.fornecedor || ''}</strong></td>
                     <td>${p.data || ''}</td>
-                    <td>${(p.descricao || '').trim() || '—'}</td>
+                    <td>${(p.descricao || '').trim() || 'â€”'}</td>
                     <td>R$ ${Number(p.valor || 0).toLocaleString('pt-BR')}</td>
-                    <td>${(p.categoria || '').trim() || '—'}</td>
+                    <td>${(p.categoria || '').trim() || 'â€”'}</td>
                     <td>${p.centro || ''}</td>
                     <td>
                         <span class="badge ${p.assinatura ? 'badge-signed' : 'badge-pending'}">
@@ -3401,7 +3399,7 @@ class UIManager {
                     <td>
                         ${p.assinatura
                             ? `<div class="signature-highlight">${assinaturaStr}</div><div class="signature-time">${assinaturaTime}</div>`
-                            : '<span>—</span>'}
+                            : '<span>â€”</span>'}
                         ${qrHtml}
                     </td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
@@ -3494,7 +3492,7 @@ class UIManager {
 
     addPaymentFromModal(){ // EXISTENTE ou NOVO // ALTERADO
       if (!this.core.admin.hasPermission(this.core.currentUser, 'add_payments')) {
-        alert('Você não tem permissão para adicionar pagamentos.');
+        alert('VocÃª nÃ£o tem permissÃ£o para adicionar pagamentos.');
         return;
       }
       const form = document.getElementById('addPaymentForm');
@@ -3511,20 +3509,20 @@ class UIManager {
         return;
       }
 
-      // Se o centro é novo, confirmar ou permitir editar // ALTERADO
+      // Se o centro Ã© novo, confirmar ou permitir editar // ALTERADO
       if(!this.core.data.hasCostCenter(centro)){
         const manter = confirm(`Detectamos um novo Centro de Custo: "${centro}".\n\nClique "OK" para ADICIONAR ASSIM MESMO.\nClique "Cancelar" para EDITAR o nome.`);
         if(!manter){
           const editado = (prompt('Informe o nome do Centro de Custo:', centro) || '').trim();
-          if(!editado){ return; } // usuário cancelou // ALTERADO
+          if(!editado){ return; } // usuÃ¡rio cancelou // ALTERADO
           centro = editado;
         }
         this.core.data.ensureCostCenter(centro); // persiste // ALTERADO
-        this.populateCostCentersDatalist(); // atualiza sugestões // ALTERADO
+        this.populateCostCentersDatalist(); // atualiza sugestÃµes // ALTERADO
       }
 
       this.core.data.addPayment({ fornecedor, data, descricao, valor, centro, categoria }); // ALTERADO
-      if (window.assistant) window.assistant.addLearningQuestion(`Quantos pagamentos estão aguardando assinatura?`, `Há ${this.core.data.records.filter(p => !p.assinatura).length} pagamentos aguardando assinatura.`); // ALTERADO
+      if (window.assistant) window.assistant.addLearningQuestion(`Quantos pagamentos estÃ£o aguardando assinatura?`, `HÃ¡ ${this.core.data.records.filter(p => !p.assinatura).length} pagamentos aguardando assinatura.`); // ALTERADO
       form.reset();
       this.closeModal('addPaymentModal');
     } // ALTERADO
@@ -3613,7 +3611,7 @@ class AuditLogger {
 
         const match = (this.core.data.records || []).find(p => p.assinatura && String(p.assinatura.hash) === query);
         if (!match) {
-            result.innerHTML = '<div class="signature-search-empty">Assinatura não encontrada.</div>';
+            result.innerHTML = '<div class="signature-search-empty">Assinatura nÃ£o encontrada.</div>';
             return;
         }
 
@@ -3640,12 +3638,12 @@ class AuditLogger {
             });
             if (verify.ok) {
                 const data = await verify.json();
-                validStatus = data.valid ? 'VÁLIDA' : 'INVÁLIDA';
+                validStatus = data.valid ? 'VÃLIDA' : 'INVÃLIDA';
             } else {
-                validStatus = 'NÃO VERIFICADA';
+                validStatus = 'NÃƒO VERIFICADA';
             }
         } catch (error) {
-            validStatus = 'NÃO VERIFICADA';
+            validStatus = 'NÃƒO VERIFICADA';
         }
 
         result.innerHTML = `
@@ -3657,7 +3655,7 @@ class AuditLogger {
                 <div><strong>Assinado por:</strong> ${match.assinatura?.usuarioNome || '-'}</div>
                 <div><strong>Assinado em:</strong> ${assinaturaData}</div>
                 <div><strong>ID da Assinatura:</strong> ${match.assinatura?.hash || '-'}</div>
-                <div><strong>Validação:</strong> ${validStatus}</div>
+                <div><strong>ValidaÃ§Ã£o:</strong> ${validStatus}</div>
             </div>
         `;
     }
@@ -3763,25 +3761,25 @@ class AdminManager {
         if (!allowPartial || usuario !== undefined) {
             const u = String(usuario || '').trim();
             if (!u || u.length < 3 || u.length > 50) {
-                errors.push('Usuário deve ter entre 3 e 50 caracteres.');
+                errors.push('UsuÃ¡rio deve ter entre 3 e 50 caracteres.');
             }
         }
 
         if (!allowPartial || email !== undefined) {
             if (!this.isValidEmail(email)) {
-                errors.push('Email inválido.');
+                errors.push('Email invÃ¡lido.');
             }
         }
 
         if (!allowPartial || senha !== undefined) {
             if (!String(senha || '').trim() || String(senha || '').trim().length < 8) {
-                errors.push('Senha deve ter no mínimo 8 caracteres.');
+                errors.push('Senha deve ter no mÃ­nimo 8 caracteres.');
             }
         }
 
         if (!allowPartial || cargo !== undefined) {
             if (!cargo || !this.isValidRole(cargo)) {
-                errors.push('Cargo inválido.');
+                errors.push('Cargo invÃ¡lido.');
             }
         }
 
@@ -3896,7 +3894,7 @@ class AdminManager {
 
     requireAdmin() {
         if (!this.hasPermission(this.core.currentUser, 'admin_access')) {
-            alert('Somente o cargo ADMIN pode gerenciar usuários e cargos.');
+            alert('Somente o cargo ADMIN pode gerenciar usuÃ¡rios e cargos.');
             return false;
         }
         return true;
@@ -3936,7 +3934,7 @@ class AdminManager {
         };
         this.saveCenterPermissions();
         window.DMF_CONTEXT.centerPermissions = this.centerPermissions;
-        this.core.audit.log('ATUALIZAÇÃO CENTROS', `Permissões de centro atualizadas para usuário ${userId}.`);
+        this.core.audit.log('ATUALIZAÃ‡ÃƒO CENTROS', `PermissÃµes de centro atualizadas para usuÃ¡rio ${userId}.`);
     }
 
     canSignCenter(user, center) {
@@ -3952,7 +3950,7 @@ class AdminManager {
         if (!this.requireAdmin()) return;
         // Validate required fields
         if (!nome || !email || !senha || !cargo) {
-            alert('Todos os campos são obrigatórios.');
+            alert('Todos os campos sÃ£o obrigatÃ³rios.');
             return;
         }
         const normalizedEmail = this.normalizeEmail(email);
@@ -3970,11 +3968,11 @@ class AdminManager {
         }
         // Check for duplicate usuario or email
         if (this.users.some(u => this.normalizeUsername(u.usuario) === normalizedUsername)) {
-            alert('Usuário já existe.');
+            alert('UsuÃ¡rio jÃ¡ existe.');
             return;
         }
         if (this.users.some(u => this.normalizeEmail(u.email) === normalizedEmail)) {
-            alert('Email já existe.');
+            alert('Email jÃ¡ existe.');
             return;
         }
         let apiUser = null;
@@ -3999,7 +3997,7 @@ class AdminManager {
                 const data = await response.json();
                 apiUser = data.user;
             } else if (response.status === 409) {
-                alert('Usuário já existe.');
+                alert('UsuÃ¡rio jÃ¡ existe.');
                 return;
             } else {
                 console.warn('API register failed:', response.status);
@@ -4009,7 +4007,7 @@ class AdminManager {
         }
 
         if (!apiUser) {
-            alert('Falha ao criar usuário no servidor. Verifique sua conexão e tente novamente.');
+            alert('Falha ao criar usuÃ¡rio no servidor. Verifique sua conexÃ£o e tente novamente.');
             return;
         }
 
@@ -4025,8 +4023,8 @@ class AdminManager {
         this.saveUsers();
         window.DMF_CONTEXT.usuarios = this.users;
         console.log('DMF_CONTEXT after createUser:', window.DMF_CONTEXT);
-        this.core.audit.log('CRIAÇÃO USUÁRIO', `Usuário ${newUser.nome} criado com cargo ${cargo}.`);
-        alert('Usuário criado com sucesso.');
+        this.core.audit.log('CRIAÃ‡ÃƒO USUÃRIO', `UsuÃ¡rio ${newUser.nome} criado com cargo ${cargo}.`);
+        alert('UsuÃ¡rio criado com sucesso.');
         return newUser;
     }
 
@@ -4053,12 +4051,12 @@ class AdminManager {
         // Check for duplicate usuario or email if changing (local cache)
         if (normalizedUpdates.usuario && normalizedUpdates.usuario !== user.usuario &&
             this.users.some(u => this.normalizeUsername(u.usuario) === normalizedUpdates.usuario)) {
-            alert('Usuário já existe.');
+            alert('UsuÃ¡rio jÃ¡ existe.');
             return;
         }
         if (normalizedUpdates.email && normalizedUpdates.email !== user.email &&
             this.users.some(u => this.normalizeEmail(u.email) === normalizedUpdates.email)) {
-            alert('Email já existe.');
+            alert('Email jÃ¡ existe.');
             return;
         }
 
@@ -4084,24 +4082,24 @@ class AdminManager {
                 const data = await response.json();
                 apiUpdated = data.user || null;
             } else if (response.status === 409) {
-                alert('Usuário já existe.');
+                alert('UsuÃ¡rio jÃ¡ existe.');
                 return;
             } else if (response.status === 401 || response.status === 403) {
-                alert('Sem permissão para atualizar usuários.');
+                alert('Sem permissÃ£o para atualizar usuÃ¡rios.');
                 return;
             } else {
                 console.warn('API update failed:', response.status);
-                alert('Falha ao atualizar usuário no servidor.');
+                alert('Falha ao atualizar usuÃ¡rio no servidor.');
                 return;
             }
         } catch (error) {
             console.warn('API update unavailable:', error.message);
-            alert('Falha ao atualizar usuário no servidor.');
+            alert('Falha ao atualizar usuÃ¡rio no servidor.');
             return;
         }
 
         if (!apiUpdated) {
-            alert('Falha ao atualizar usuário no servidor.');
+            alert('Falha ao atualizar usuÃ¡rio no servidor.');
             return;
         }
 
@@ -4124,14 +4122,14 @@ class AdminManager {
         });
 
         this.saveUsers();
-        this.core.audit.log('ATUALIZAÇÃO USUÁRIO', `Usuário ${user.nome} atualizado.`);
-        alert('Usuário atualizado com sucesso.');
+        this.core.audit.log('ATUALIZAÃ‡ÃƒO USUÃRIO', `UsuÃ¡rio ${user.nome} atualizado.`);
+        alert('UsuÃ¡rio atualizado com sucesso.');
     }
 
     async deleteUser(id) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
-            alert('Não é permitido excluir o próprio usuário logado.');
+            alert('NÃ£o Ã© permitido excluir o prÃ³prio usuÃ¡rio logado.');
             return;
         }
         try {
@@ -4144,31 +4142,31 @@ class AdminManager {
             if (response.ok) {
                 const data = await response.json();
                 if (!data.success) {
-                    alert('Erro ao excluir usuário.');
+                    alert('Erro ao excluir usuÃ¡rio.');
                     return;
                 }
             } else {
                 console.warn('API delete failed:', response.status);
-                alert('Erro ao excluir usuário.');
+                alert('Erro ao excluir usuÃ¡rio.');
                 return;
             }
         } catch (error) {
             console.warn('API delete unavailable:', error.message);
-            alert('Erro ao excluir usuário.');
+            alert('Erro ao excluir usuÃ¡rio.');
             return;
         }
 
         this.users = this.users.filter(u => Number(u.id) !== Number(id));
         this.saveUsers();
-        this.core.audit.log('EXCLUSÃO USUÁRIO', `Usuário ID ${id} excluído.`);
+        this.core.audit.log('EXCLUSÃƒO USUÃRIO', `UsuÃ¡rio ID ${id} excluÃ­do.`);
         this.core.ui.renderUsersTable();
-        alert('Usuário excluído com sucesso.');
+        alert('UsuÃ¡rio excluÃ­do com sucesso.');
     }
 
     createRole() {
         if (!this.requireAdmin()) return;
         const name = prompt('Nome do cargo:');
-        const permissions = prompt('Permissões (separadas por vírgula):');
+        const permissions = prompt('PermissÃµes (separadas por vÃ­rgula):');
         if(name && permissions) {
             const newRole = {
                 id: Date.now(),
@@ -4177,7 +4175,7 @@ class AdminManager {
             };
             this.roles.push(newRole);
             this.saveRoles();
-            this.core.audit.log('CRIAÇÃO CARGO', `Cargo ${name} criado com permissões: ${permissions}.`);
+            this.core.audit.log('CRIAÃ‡ÃƒO CARGO', `Cargo ${name} criado com permissÃµes: ${permissions}.`);
             this.core.ui.renderRolesTable();
             return newRole;
         }
@@ -4201,7 +4199,7 @@ class AdminManager {
                 form.reset();
             });
         } else {
-            alert('Por favor, preencha todos os campos obrigatórios.');
+            alert('Por favor, preencha todos os campos obrigatÃ³rios.');
         }
     }
 
@@ -4242,7 +4240,7 @@ class AdminManager {
             return;
         }
         if (permissions.length === 0) {
-            alert('Por favor, selecione pelo menos uma permissão.');
+            alert('Por favor, selecione pelo menos uma permissÃ£o.');
             return;
         }
 
@@ -4253,7 +4251,7 @@ class AdminManager {
         };
         this.roles.push(newRole);
         this.saveRoles();
-        this.core.audit.log('CRIAÇÃO CARGO', `Cargo ${name} criado com permissões: ${permissions.join(', ')}.`);
+        this.core.audit.log('CRIAÃ‡ÃƒO CARGO', `Cargo ${name} criado com permissÃµes: ${permissions.join(', ')}.`);
         this.upsertRoleToApi(newRole);
         this.sendRoleEvent('create', newRole);
         this.core.ui.closeModal('createRoleModal');
@@ -4267,7 +4265,7 @@ class AdminManager {
         if (role) {
             Object.assign(role, updates);
             this.saveRoles();
-            this.core.audit.log('ATUALIZAÇÃO CARGO', `Cargo ${role.name} atualizado. Permissões: ${(role.permissions || []).join(', ')}`);
+            this.core.audit.log('ATUALIZAÃ‡ÃƒO CARGO', `Cargo ${role.name} atualizado. PermissÃµes: ${(role.permissions || []).join(', ')}`);
             this.upsertRoleToApi(role);
             this.sendRoleEvent('update', role);
         }
@@ -4278,7 +4276,7 @@ class AdminManager {
         const role = this.roles.find(r => r.id === id);
         this.roles = this.roles.filter(r => r.id !== id);
         this.saveRoles();
-        this.core.audit.log('EXCLUSÃO CARGO', `Cargo ${role?.name || id} excluído.`);
+        this.core.audit.log('EXCLUSÃƒO CARGO', `Cargo ${role?.name || id} excluÃ­do.`);
         if (role) this.sendRoleEvent('delete', role);
         if (role?.name) {
             this.deleteRoleFromApi(role.name);
@@ -4308,10 +4306,10 @@ class AdminManager {
     async revokeSession(id) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
-            alert('Use "Revogar Sessão" para si mesmo nas configurações da sessão.');
+            alert('Use "Revogar SessÃ£o" para si mesmo nas configuraÃ§Ãµes da sessÃ£o.');
             return;
         }
-        if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
+        if (!confirm('Revogar sessÃ£o deste usuÃ¡rio? Ele serÃ¡ desconectado em atÃ© 10s.')) return;
         try {
             const response = await fetch(`${getApiBase()}/api/auth/revoke/${id}`, {
                 method: 'POST',
@@ -4321,13 +4319,13 @@ class AdminManager {
                 }
             });
             if (!response.ok) {
-                alert('Falha ao revogar sessão.');
+                alert('Falha ao revogar sessÃ£o.');
                 return;
             }
-            this.core.audit.log('REVOGAÇÃO SESSÃO', `Sessões do usuário ${id} foram revogadas.`);
-            alert('Sessão revogada com sucesso.');
+            this.core.audit.log('REVOGAÃ‡ÃƒO SESSÃƒO', `SessÃµes do usuÃ¡rio ${id} foram revogadas.`);
+            alert('SessÃ£o revogada com sucesso.');
         } catch (error) {
-            alert('Falha ao revogar sessão.');
+            alert('Falha ao revogar sessÃ£o.');
         }
     }
 
@@ -4506,7 +4504,7 @@ class CobliManager {
                     : `${Number(productivityValue).toFixed(1)}%`;
             }
         } catch (error) {
-            console.error('Erro ao buscar estatísticas Cobli:', error.message);
+            console.error('Erro ao buscar estatÃ­sticas Cobli:', error.message);
             Object.values(elements).forEach(el => {
                 if (el) el.innerText = '-';
             });
@@ -4545,7 +4543,7 @@ class CobliManager {
 
                 return {
                     id: id || vehicle.plate || vehicle.name,
-                    name: vehicle.name || vehicle.plate || `Veículo ${id || ''}`.trim(),
+                    name: vehicle.name || vehicle.plate || `VeÃ­culo ${id || ''}`.trim(),
                     lat: Number(lat),
                     lng: Number(lng)
                 };
@@ -4554,7 +4552,7 @@ class CobliManager {
             this.initMap();
             this.updateMarkers();
         } catch (error) {
-            console.error('Erro ao carregar veículos Cobli:', error.message);
+            console.error('Erro ao carregar veÃ­culos Cobli:', error.message);
         }
     }
 
@@ -4569,7 +4567,7 @@ class CobliManager {
 
         // Add OpenStreetMap tiles
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
+            attribution: 'Â© OpenStreetMap contributors'
         }).addTo(this.map);
 
         // Add markers for vehicles
@@ -4619,7 +4617,7 @@ window.DMF_CONTEXT = {
     eventos: []
 };
 
-// Cérebro Inteligente do Sistema DMF
+// CÃ©rebro Inteligente do Sistema DMF
 window.DMF_BRAIN = {
     usuarios: [],
     pagamentos: [],
@@ -4631,7 +4629,7 @@ window.DMF_BRAIN = {
     memoria: []
 };
 
-// Função para registrar eventos no contexto
+// FunÃ§Ã£o para registrar eventos no contexto
 function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = null) {
     const evento = {
         tipo,
@@ -4643,7 +4641,7 @@ function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = nu
     };
     window.DMF_CONTEXT.eventos.push(evento);
     window.DMF_BRAIN.eventos.push(evento);
-    // Manter apenas os últimos 1000 eventos
+    // Manter apenas os Ãºltimos 1000 eventos
     if (window.DMF_CONTEXT.eventos.length > 1000) {
         window.DMF_CONTEXT.eventos.shift();
     }
@@ -4716,7 +4714,7 @@ function initDomBindings() {
             if (!isAdminUser(system?.currentUser)) {
                 return;
             }
-            if (!confirm('Revogar todas as sessões ativas e sair?')) return;
+            if (!confirm('Revogar todas as sessÃµes ativas e sair?')) return;
             fetch(`${getApiBase()}/api/auth/revoke-self`, {
                 method: 'POST',
                 headers: {
@@ -4747,7 +4745,7 @@ function initDomBindings() {
     const fileInput = document.getElementById('fileInput');
     if (importPaymentsButton && fileInput) {
         importPaymentsButton.addEventListener('click', function () {
-            console.log('Botão Importar clicado');
+            console.log('BotÃ£o Importar clicado');
             fileInput.click();
         });
 
@@ -4756,7 +4754,7 @@ function initDomBindings() {
             if (system && system.data) {
                 system.data.import(event.target);
             } else {
-                console.error('Sistema não inicializado');
+                console.error('Sistema nÃ£o inicializado');
             }
         });
     }
@@ -4804,7 +4802,7 @@ function initDomBindings() {
     const backupFileInput = document.getElementById('backupFileInput');
     if (backupUploadButton && backupFileInput) {
         backupUploadButton.addEventListener('click', function () {
-            if (!confirm('Restaurar backup irá substituir usuários e fluxos atuais. Deseja continuar?')) {
+            if (!confirm('Restaurar backup irÃ¡ substituir usuÃ¡rios e fluxos atuais. Deseja continuar?')) {
                 return;
             }
             backupFileInput.click();
@@ -5035,7 +5033,7 @@ function initDomBindings() {
             if (!button) return;
             const id = button.getAttribute('data-archive-delete');
             if (!id) return;
-            if (!confirm('Deseja excluir este fluxo anterior? Esta ação não pode ser desfeita.')) {
+            if (!confirm('Deseja excluir este fluxo anterior? Esta aÃ§Ã£o nÃ£o pode ser desfeita.')) {
                 return;
             }
             system?.data?.deleteArchive?.(id).then((ok) => {
@@ -5124,7 +5122,7 @@ function initDomBindings() {
     if (compareArchivesButton) {
         compareArchivesButton.addEventListener('click', function () {
             if (!system?.admin?.hasPermission?.(system?.currentUser, 'compare_archives')) {
-                alert('Você não tem permissão para comparar fluxos anteriores.');
+                alert('VocÃª nÃ£o tem permissÃ£o para comparar fluxos anteriores.');
                 return;
             }
             const selectA = document.getElementById('archiveCompareA');
@@ -5150,7 +5148,7 @@ function initDomBindings() {
         saveBudgetsButton.addEventListener('click', function () {
             const isAdmin = system?.admin?.hasPermission?.(system?.currentUser, 'admin_access');
             if (!isAdmin) {
-                alert('Somente admin pode salvar orçamentos.');
+                alert('Somente admin pode salvar orÃ§amentos.');
                 return;
             }
             const budgets = {
@@ -5160,7 +5158,7 @@ function initDomBindings() {
             };
             system?.ui?.saveBudgets?.(budgets);
             system?.ui?.renderMonthlyReports?.();
-            alert('Orçamentos salvos.');
+            alert('OrÃ§amentos salvos.');
         });
     }
 
@@ -5267,7 +5265,7 @@ window.dmfLogout = function dmfLogout() {
 if (window.DMF_DEBUG) setTimeout(testDMFContextUpdates, 1000);
 
 
-// ==== SINCRONIZAÇÃO AUTOMÁTICA COM DMF_BRAIN ====
+// ==== SINCRONIZAÃ‡ÃƒO AUTOMÃTICA COM DMF_BRAIN ====
 function syncBrain(){
   try{
     const sys = window.DMF?.system || window.system;
@@ -5287,5 +5285,5 @@ function syncBrain(){
 
 // sincroniza a cada 2s sem travar
 setInterval(syncBrain,2000);
-// ==== FIM SINCRONIZAÇÃO ====
+// ==== FIM SINCRONIZAÃ‡ÃƒO ====
 
