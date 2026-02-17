@@ -1,4 +1,44 @@
 /* Chat Styles */
+.assistant-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.assistant-header h2 {
+    margin: 0;
+}
+
+.chat-clear-btn {
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+.chat-quick-prompts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.chat-quick-btn {
+    border: 1px solid var(--border);
+    background: #f5f8ff;
+    color: var(--text-primary);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.chat-quick-btn:hover {
+    border-color: var(--primary);
+    background: #eaf2ff;
+}
+
 .chat-container {
     display: flex;
     flex-direction: column;
@@ -46,6 +86,11 @@
     background: #f1f5f9;
     color: var(--text-primary);
     border-bottom-left-radius: 4px;
+}
+
+.chat-message.typing .chat-bubble {
+    opacity: 0.75;
+    font-style: italic;
 }
 
 .feedback-buttons {
@@ -106,4 +151,15 @@
 .chat-send-btn {
     padding: 12px 24px;
     white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+    .assistant-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .chat-send-btn {
+        width: 100%;
+    }
 }

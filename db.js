@@ -117,22 +117,6 @@ const CenterCompanyModel = () => getSequelize().define('app_center_companies', {
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { timestamps: false, freezeTableName: true });
 
-const CostCenterModel = () => getSequelize().define('app_cost_centers', {
-  center_key: { type: DataTypes.TEXT, primaryKey: true },
-  center_label: { type: DataTypes.TEXT, allowNull: false },
-  first_seen_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
-  last_seen_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
-  last_seen_company: { type: DataTypes.TEXT },
-}, { timestamps: false, freezeTableName: true });
-
-const BudgetLimitModel = () => getSequelize().define('budget_limits', {
-  month_key: { type: DataTypes.TEXT, primaryKey: true }, // YYYY-MM
-  company: { type: DataTypes.TEXT, primaryKey: true },
-  limit_value: { type: DataTypes.DOUBLE, allowNull: false, defaultValue: 0 },
-  updated_by: { type: DataTypes.TEXT },
-  updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
-}, { timestamps: false, freezeTableName: true });
-
 const BackupSnapshotModel = () => getSequelize().define('backup_snapshots', {
   id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
@@ -159,13 +143,10 @@ async function initDb() {
       UserSessionModel();
       UserCompanyModel();
       CenterCompanyModel();
-      CostCenterModel();
-      BudgetLimitModel();
       BackupSnapshotModel();
       WebhookModel();
       await db.sync();
       await ensureDefaultRoles();
-      await ensureCostCentersSeeded().catch(() => {});
       dbReady = true;
       return;
     } catch (error) {
@@ -677,260 +658,6 @@ async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
   return row ? row.toJSON() : null;
 }
 
-function normalizeCompany(value) {
-  const v = String(value || '').trim().toLowerCase();
-  if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
-  if (v === 'jfx') return 'JFX';
-  if (v === 'dmf') return 'DMF';
-  return String(value || '').trim();
-}
-
-function monthKeyToRange(monthKey) {
-  const raw = String(monthKey || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(raw)) return null;
-  const [yy, mm] = raw.split('-').map(Number);
-  if (!yy || !mm || mm < 1 || mm > 12) return null;
-  const start = new Date(Date.UTC(yy, mm - 1, 1));
-  const end = new Date(Date.UTC(yy, mm, 1));
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  return { monthKey: raw, start: fmt(start), end: fmt(end) };
-}
-
-async function listBudgetLimits(monthKey, companies = null) {
-  const Budget = BudgetLimitModel();
-  const range = monthKeyToRange(monthKey);
-  if (!range) return [];
-  const where = { month_key: range.monthKey };
-  if (Array.isArray(companies) && companies.length) {
-    where.company = { [Op.in]: companies.map(normalizeCompany).filter(Boolean) };
-  }
-  const rows = await Budget.findAll({ where });
-  return rows.map(r => r.toJSON());
-}
-
-async function upsertBudgetLimits(monthKey, budgets, updatedBy = null) {
-  const Budget = BudgetLimitModel();
-  const range = monthKeyToRange(monthKey);
-  if (!range) return 0;
-  const items = budgets && typeof budgets === 'object' ? budgets : {};
-  let count = 0;
-  for (const [companyRaw, valueRaw] of Object.entries(items)) {
-    const company = normalizeCompany(companyRaw);
-    if (!company) continue;
-    const limitValue = Number(valueRaw || 0);
-    if (!Number.isFinite(limitValue) || limitValue < 0) continue;
-    await Budget.upsert({
-      month_key: range.monthKey,
-      company,
-      limit_value: limitValue,
-      updated_by: updatedBy || null,
-      updated_at: new Date(),
-    });
-    count += 1;
-  }
-  return count;
-}
-
-async function getMonthlyReport({ monthKey, companies }) {
-  const db = getSequelize();
-  const range = monthKeyToRange(monthKey);
-  if (!range) {
-    return {
-      totals_by_company: {},
-      grand_total: 0,
-      top_cost_centers: [],
-      counts: { total: 0, signed: 0, pending: 0 },
-    };
-  }
-
-  const allowedCompanies = (Array.isArray(companies) ? companies : [])
-    .map(normalizeCompany)
-    .filter(Boolean);
-  const includeNullForDMF = allowedCompanies.includes('DMF');
-
-  const commonWhere = `
-    (company = ANY(:companies) OR (:includeNullForDMF = true AND company IS NULL))
-  `;
-
-  const parsedDateExpr = `
-    CASE
-      WHEN data ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(data, 'YYYY-MM-DD')
-      WHEN data ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(data, 'DD/MM/YYYY')
-      WHEN data ~ '^\\d{4}-\\d{2}$' THEN to_date(data || '-01', 'YYYY-MM-DD')
-      ELSE NULL
-    END
-  `;
-
-  const baseCte = `
-    WITH scoped AS (
-      SELECT
-        COALESCE(NULLIF(TRIM(company), ''), 'DMF') AS company_norm,
-        NULLIF(TRIM(centro), '') AS centro_norm,
-        ABS(COALESCE(valor, 0))::double precision AS valor_abs,
-        assinatura,
-        ${parsedDateExpr} AS pay_date
-      FROM flow_payments
-      WHERE ${commonWhere}
-    ),
-    filtered AS (
-      SELECT * FROM scoped
-      WHERE pay_date IS NOT NULL
-        AND pay_date >= :start::date
-        AND pay_date < :end::date
-    )
-  `;
-
-  const replacements = {
-    companies: allowedCompanies,
-    includeNullForDMF,
-    start: range.start,
-    end: range.end,
-  };
-
-  const totalsRows = await db.query(
-    `${baseCte}
-     SELECT company_norm AS company, SUM(valor_abs)::double precision AS total
-     FROM filtered
-     GROUP BY company_norm
-     ORDER BY company_norm ASC`,
-    { replacements, type: Sequelize.QueryTypes.SELECT }
-  );
-
-  const countsRows = await db.query(
-    `${baseCte}
-     SELECT
-       COUNT(*)::bigint AS total,
-       SUM(CASE WHEN assinatura IS NOT NULL THEN 1 ELSE 0 END)::bigint AS signed,
-       SUM(CASE WHEN assinatura IS NULL THEN 1 ELSE 0 END)::bigint AS pending
-     FROM filtered`,
-    { replacements, type: Sequelize.QueryTypes.SELECT }
-  );
-
-  const topCentersRows = await db.query(
-    `${baseCte}
-     SELECT COALESCE(centro_norm, 'Sem centro') AS center, SUM(valor_abs)::double precision AS total
-     FROM filtered
-     GROUP BY COALESCE(centro_norm, 'Sem centro')
-     ORDER BY SUM(valor_abs) DESC
-     LIMIT 8`,
-    { replacements, type: Sequelize.QueryTypes.SELECT }
-  );
-
-  const totalsByCompany = {};
-  let grandTotal = 0;
-  for (const row of totalsRows || []) {
-    const company = normalizeCompany(row.company) || row.company;
-    const total = Number(row.total || 0) || 0;
-    totalsByCompany[company] = total;
-    grandTotal += total;
-  }
-
-  const countsRaw = Array.isArray(countsRows) && countsRows[0] ? countsRows[0] : {};
-  const counts = {
-    total: Number(countsRaw.total || 0) || 0,
-    signed: Number(countsRaw.signed || 0) || 0,
-    pending: Number(countsRaw.pending || 0) || 0,
-  };
-
-  const topCostCenters = (topCentersRows || []).map((r) => ({
-    center: String(r.center || 'Sem centro'),
-    total: Number(r.total || 0) || 0,
-  }));
-
-  return {
-    totals_by_company: totalsByCompany,
-    grand_total: grandTotal,
-    top_cost_centers: topCostCenters,
-    counts,
-  };
-}
-
-function normalizeCenterLabel(value) {
-  return String(value || '').trim().replace(/\s+/g, ' ');
-}
-
-function centerKey(value) {
-  return normalizeCenterLabel(value).toLowerCase();
-}
-
-async function upsertCostCenter(centerLabel, company = null) {
-  const Center = CostCenterModel();
-  const label = normalizeCenterLabel(centerLabel);
-  const key = centerKey(label);
-  if (!label || !key) return null;
-  const now = new Date();
-  const existing = await Center.findByPk(key);
-  if (!existing) {
-    await Center.create({
-      center_key: key,
-      center_label: label,
-      first_seen_at: now,
-      last_seen_at: now,
-      last_seen_company: company || null,
-    });
-    const created = await Center.findByPk(key);
-    return created ? created.toJSON() : null;
-  }
-
-  await Center.update({
-    center_label: label,
-    last_seen_at: now,
-    last_seen_company: company || existing.last_seen_company || null,
-  }, { where: { center_key: key } });
-  const row = await Center.findByPk(key);
-  return row ? row.toJSON() : null;
-}
-
-async function bulkUpsertCostCenters(items) {
-  if (!Array.isArray(items) || !items.length) return 0;
-  let count = 0;
-  for (const item of items) {
-    const label = normalizeCenterLabel(item?.center_label || item?.center || item);
-    const company = item?.company ? String(item.company).trim() : null;
-    if (!label) continue;
-    await upsertCostCenter(label, company);
-    count += 1;
-  }
-  return count;
-}
-
-async function listCostCenters({ search = null, limit = 2000 } = {}) {
-  const Center = CostCenterModel();
-  const safeLimit = Number.isFinite(Number(limit)) ? Math.min(Math.max(Number(limit), 1), 5000) : 2000;
-  const where = {};
-  if (search) {
-    where.center_label = { [Op.iLike]: `%${String(search).trim()}%` };
-  }
-  const rows = await Center.findAll({
-    where,
-    order: [['center_label', 'ASC']],
-    limit: safeLimit
-  });
-  return rows.map(r => r.toJSON());
-}
-
-async function ensureCostCentersSeeded() {
-  const Center = CostCenterModel();
-  const existing = await Center.count();
-  if (existing > 0) return true;
-  const db = getSequelize();
-  const rows = await db.query(
-    `
-      SELECT DISTINCT NULLIF(TRIM(centro), '') AS center_label
-      FROM flow_payments
-      WHERE centro IS NOT NULL AND TRIM(centro) <> ''
-      LIMIT 5000
-    `,
-    { type: Sequelize.QueryTypes.SELECT }
-  );
-  const items = (rows || [])
-    .map(r => normalizeCenterLabel(r.center_label))
-    .filter(Boolean)
-    .map(label => ({ center_label: label }));
-  await bulkUpsertCostCenters(items);
-  return true;
-}
-
 async function validateDbSchema() {
   if (!dbReady) {
     return { ok: false, reason: 'db_not_ready', missing: [] };
@@ -940,7 +667,6 @@ async function validateDbSchema() {
     { table: 'flow_payments', columns: ['id', 'company', 'assinatura', 'version', 'updated_at'] },
     { table: 'app_roles', columns: ['name', 'permissions'] },
     { table: 'app_center_companies', columns: ['center_key', 'center_label', 'company'] },
-    { table: 'app_cost_centers', columns: ['center_key', 'center_label', 'last_seen_at'] },
     { table: 'app_user_companies', columns: ['user_id', 'company'] }
   ];
   const missing = [];
@@ -984,6 +710,22 @@ async function createFlowArchive({ id, label, payments, createdBy, count, compan
     count: Number(count) || 0,
     created_at: new Date(),
   });
+  return row ? row.toJSON() : null;
+}
+
+async function getFlowArchiveById(id) {
+  const Archive = FlowArchiveModel();
+  const row = await Archive.findByPk(String(id));
+  return row ? row.toJSON() : null;
+}
+
+async function updateFlowArchivePayments(id, payments) {
+  const Archive = FlowArchiveModel();
+  await Archive.update({
+    payments,
+    count: Array.isArray(payments) ? payments.length : 0
+  }, { where: { id: String(id) } });
+  const row = await Archive.findByPk(String(id));
   return row ? row.toJSON() : null;
 }
 
@@ -1091,9 +833,10 @@ module.exports = {
   updateFlowPayment,
   getFlowPaymentById,
   signFlowPaymentIfUnsigned,
-  getMonthlyReport,
   listFlowArchives,
   createFlowArchive,
+  getFlowArchiveById,
+  updateFlowArchivePayments,
   deleteFlowArchive,
   replaceFlowArchives,
   listUserCompanies,
@@ -1101,11 +844,6 @@ module.exports = {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
-  listCostCenters,
-  upsertCostCenter,
-  bulkUpsertCostCenters,
-  listBudgetLimits,
-  upsertBudgetLimits,
   insertBackupSnapshot,
   listBackupSnapshots,
   insertLoginAudit,

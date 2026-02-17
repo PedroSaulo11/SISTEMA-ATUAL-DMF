@@ -1,7 +1,7 @@
 /* Minimal SW to enable installability.
    Never cache /api/* responses (auth + sensitive). */
 
-const SW_VERSION = '20260215-f9';
+const SW_VERSION = '20260217-f14';
 const CACHE_NAME = `dmf-static-${SW_VERSION}`;
 
 const PRECACHE = [
@@ -21,7 +21,6 @@ const PRECACHE = [
   '/verify.html',
   '/verify.js',
   '/verify.css',
-  '/offline.html',
   '/favicon.ico',
   '/assets/logo-dmf.png',
   '/manifest.webmanifest'
@@ -31,13 +30,8 @@ self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
     await cache.addAll(PRECACHE.map((u) => `${u}?v=${encodeURIComponent(SW_VERSION)}`));
-  })());
-});
-
-self.addEventListener('message', (event) => {
-  if (event?.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
-  }
+  })());
 });
 
 self.addEventListener('activate', (event) => {
@@ -66,9 +60,8 @@ self.addEventListener('fetch', (event) => {
         return await fetch(event.request);
       } catch (_) {
         const cache = await caches.open(CACHE_NAME);
-        const offline = await cache.match(`/offline.html?v=${encodeURIComponent(SW_VERSION)}`);
-        const cachedIndex = await cache.match(`/index.html?v=${encodeURIComponent(SW_VERSION)}`);
-        return offline || cachedIndex || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+        const cached = await cache.match(`/index.html?v=${encodeURIComponent(SW_VERSION)}`);
+        return cached || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
       }
     })());
     return;

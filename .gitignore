@@ -10,3 +10,5 @@ Thumbs.db
 .env
 .gcloud_config/
 scripts/run-multiuser-tests.ps1
+.gcloud_config/
+scripts/run-multiuser-tests.ps1

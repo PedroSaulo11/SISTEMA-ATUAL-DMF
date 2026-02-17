@@ -1,4 +1,4 @@
-﻿// ==== DMF BRAIN (auto-gerado) ====
+// ==== DMF BRAIN (auto-gerado) ====
 window.DMF_BRAIN = window.DMF_BRAIN || {
   usuarios: [],
   pagamentos: [],
@@ -103,107 +103,6 @@ function showToast(message, type = 'info', ttl = 3500) {
         toast.style.transform = 'translateY(-6px)';
         setTimeout(() => toast.remove(), 200);
     }, ttl);
-}
-
-function triggerHaptic(kind = 'tap') {
-    try {
-        if (!navigator || typeof navigator.vibrate !== 'function') return;
-        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-        if (kind === 'confirm') {
-            navigator.vibrate([10, 20, 12]);
-            return;
-        }
-        navigator.vibrate(10);
-    } catch (_) {
-        // no-op
-    }
-}
-
-// --- Lazy loaders for heavy libraries (PWA performance) ---
-function loadScriptOnce(src, { timeoutMs = 20000 } = {}) {
-    window.__DMF_LOADED_SCRIPTS = window.__DMF_LOADED_SCRIPTS || new Map();
-    const cache = window.__DMF_LOADED_SCRIPTS;
-    if (cache.has(src)) return cache.get(src);
-
-    const p = new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = src;
-        s.async = true;
-        const t = setTimeout(() => {
-            try { s.remove(); } catch (_) {}
-            reject(new Error('Script timeout'));
-        }, timeoutMs);
-        s.onload = () => { clearTimeout(t); resolve(true); };
-        s.onerror = () => { clearTimeout(t); reject(new Error('Script load error')); };
-        document.head.appendChild(s);
-    });
-    cache.set(src, p);
-    return p;
-}
-
-async function ensureChartJs() {
-    if (window.Chart) return true;
-    await loadScriptOnce('https://cdn.jsdelivr.net/npm/chart.js', { timeoutMs: 20000 });
-    return !!window.Chart;
-}
-
-async function ensureXlsx() {
-    if (window.XLSX) return true;
-    await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', { timeoutMs: 25000 });
-    return !!window.XLSX;
-}
-
-async function ensureLeaflet() {
-    if (window.L && typeof window.L.map === 'function') return true;
-    await loadScriptOnce('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', { timeoutMs: 25000 });
-    return !!(window.L && typeof window.L.map === 'function');
-}
-
-function setupPwaUpdateBanner() {
-    const banner = document.getElementById('pwaUpdateBanner');
-    const btnNow = document.getElementById('btnPwaUpdateNow');
-    const btnLater = document.getElementById('btnPwaUpdateLater');
-    if (!banner || !btnNow || !btnLater) return;
-
-    let pendingRegistration = null;
-    const show = () => banner.classList.remove('hidden');
-    const hide = () => banner.classList.add('hidden');
-
-    const onUpdateEvent = async (evt) => {
-        const reg = evt?.detail?.registration || window.__DMF_SW_REG || await navigator.serviceWorker?.getRegistration?.();
-        if (!reg) return;
-        pendingRegistration = reg;
-        show();
-    };
-
-    window.addEventListener('dmf-sw-update', onUpdateEvent);
-    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-        navigator.serviceWorker.getRegistration().then((reg) => {
-            if (reg?.waiting) {
-                pendingRegistration = reg;
-                show();
-            }
-        }).catch(() => {});
-    }
-
-    let refreshing = false;
-    if (navigator.serviceWorker) {
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-            if (refreshing) return;
-            refreshing = true;
-            window.location.reload();
-        });
-    }
-
-    btnLater.addEventListener('click', hide);
-    btnNow.addEventListener('click', () => {
-        const worker = pendingRegistration?.waiting;
-        if (!worker) {
-            hide();
-            return;
-        }
-        worker.postMessage({ type: 'SKIP_WAITING' });
-    });
 }
 
 function parseJwtPayload(token) {
@@ -577,51 +476,6 @@ class DataProcessor {
         }
     }
 
-    getFlowSnapshotStorageKey(company) {
-        return `dmf_flow_snapshot_${this.companyKey(company)}`;
-    }
-
-    saveFlowSnapshot(company, payments) {
-        try {
-            const key = this.getFlowSnapshotStorageKey(company);
-            const payload = {
-                saved_at: Date.now(),
-                company: this.normalizeCompany(company),
-                payments: Array.isArray(payments) ? payments : []
-            };
-            localStorage.setItem(key, JSON.stringify(payload));
-        } catch (_) {}
-    }
-
-    loadFlowSnapshot(company) {
-        try {
-            const key = this.getFlowSnapshotStorageKey(company);
-            const raw = localStorage.getItem(key);
-            if (!raw) return null;
-            const payload = JSON.parse(raw);
-            if (!payload || !Array.isArray(payload.payments)) return null;
-            return payload;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    restoreFlowFromSnapshot(company) {
-        const snapshot = this.loadFlowSnapshot(company);
-        if (!snapshot || !Array.isArray(snapshot.payments)) return false;
-        this.records = snapshot.payments.slice();
-        this.currentCompany = this.normalizeCompany(company);
-        this.save();
-        window.DMF_CONTEXT.pagamentos = this.records;
-        window.DMF_CONTEXT.assinaturas = this.records.filter(r => r.assinatura);
-        window.DMF_CONTEXT.currentCompany = this.currentCompany;
-        if (window.DMF_BRAIN) {
-            window.DMF_BRAIN.pagamentos = this.records;
-            window.DMF_BRAIN.assinaturas = this.records.filter(r => r.assinatura);
-        }
-        return true;
-    }
-
     userCompanyKey() {
         const u = this.core?.currentUser;
         const raw = u?.id || u?.email || u?.username || null;
@@ -705,9 +559,6 @@ class DataProcessor {
                     this.flowFetchCooldownUntil = Date.now() + delay;
                     setFlowSyncStatus(`Muitas solicitações. Reenviando em ${Math.ceil(delay / 1000)}s.`, 'warn');
                     showToast('Servidor ocupado. Vamos tentar novamente em instantes.', 'warn');
-                    if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
-                        setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
-                    }
                     console.warn('Flow payments fetch throttled:', response.status);
                     return false;
                 }
@@ -715,9 +566,6 @@ class DataProcessor {
                 if (response.status !== 401 && response.status !== 403) {
                     setFlowSyncStatus('Falha ao sincronizar. Tente novamente.', 'error');
                     showToast('Falha ao sincronizar pagamentos.', 'error');
-                    if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
-                        setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
-                    }
                 }
                 return false;
             }
@@ -753,7 +601,6 @@ class DataProcessor {
             } else {
                 setFlowSyncStatus('Nenhum pagamento encontrado no servidor.', 'warn');
             }
-            this.saveFlowSnapshot(company, this.records);
             this.lastSyncAt = new Date();
             this.resetFlowBackoff();
             return true;
@@ -761,9 +608,6 @@ class DataProcessor {
             console.warn('Flow payments fetch unavailable:', error.message);
             setFlowSyncStatus('Servidor indisponível. Tente novamente.', 'error');
             showToast('Servidor indisponível. Tente novamente.', 'error');
-            if ((!this.records || !this.records.length) && this.restoreFlowFromSnapshot(company)) {
-                setFlowSyncStatus(`Offline: exibindo última leitura de ${company}.`, 'warn');
-            }
             const delay = this.nextFlowBackoffDelay();
             this.flowFetchCooldownUntil = Date.now() + delay;
             return false;
@@ -801,14 +645,16 @@ class DataProcessor {
         }
     }
 
-    async archiveCurrentFlow() {
+    async archiveCurrentFlow(options = {}) {
+        const forceUnsigned = !!options.forceUnsigned;
         try {
             const response = await fetch(`${getApiBase()}/api/flow-archives?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
-                }
+                },
+                body: JSON.stringify({ forceUnsigned })
             });
             if (!response.ok) {
                 const payload = await response.json().catch(() => ({}));
@@ -857,21 +703,48 @@ class DataProcessor {
         }
     }
 
-    async exportArchive(archive) {
+    async signArchivePayment(archiveId, paymentId, company = this.currentCompany) {
+        try {
+            const response = await fetch(`${getApiBase()}/api/flow-archives/${encodeURIComponent(archiveId)}/payments/${encodeURIComponent(paymentId)}/sign?company=${encodeURIComponent(company)}`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                if (response.status === 409) {
+                    showToast('Este pagamento ja foi assinado.', 'warn');
+                    if (payload?.archive) {
+                        this.archives = (this.archives || []).map(a => a.id === payload.archive.id ? payload.archive : a);
+                    }
+                    return false;
+                }
+                alert(payload?.error || 'Nao foi possivel assinar o pagamento arquivado.');
+                return false;
+            }
+            const data = await response.json();
+            if (data?.archive) {
+                this.archives = (this.archives || []).map(a => a.id === data.archive.id ? data.archive : a);
+                if (window.DMF_CONTEXT) {
+                    window.DMF_CONTEXT.archives = this.archives;
+                }
+            }
+            return data?.archive || null;
+        } catch (error) {
+            console.warn('Archive sign failed:', error.message);
+            alert('Falha ao assinar pagamento em fluxo arquivado.');
+            return false;
+        }
+    }
+
+    exportArchive(archive) {
         if (!archive) return;
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_archives') &&
             !this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
             alert('Você não tem permissão para exportar fluxos anteriores.');
             return;
-        }
-        if (!window.XLSX) {
-            showToast('Carregando exportador...', 'info');
-            try {
-                await ensureXlsx();
-            } catch (_) {
-                alert('Não foi possível carregar o exportador (XLSX). Tente novamente.');
-                return;
-            }
         }
         const payments = Array.isArray(archive.payments) ? archive.payments : [];
         const header = [
@@ -906,21 +779,11 @@ class DataProcessor {
         XLSX.writeFile(wb, `${safeLabel}.xlsx`);
     }
 
-    async import(input) {
+    import(input) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'import_payments')) {
             alert('Você não tem permissão para importar o fluxo de pagamentos.');
             input.value = '';
             return;
-        }
-        if (!window.XLSX) {
-            showToast('Carregando importador...', 'info');
-            try {
-                await ensureXlsx();
-            } catch (_) {
-                alert('Não foi possível carregar o importador (XLSX). Tente novamente.');
-                input.value = '';
-                return;
-            }
         }
         const file = input.files[0];
         if (!file) {
@@ -1103,7 +966,6 @@ class DataProcessor {
 
     save() {
         localStorage.setItem(this.getPaymentsStorageKey(this.currentCompany), JSON.stringify(this.records));
-        this.saveFlowSnapshot(this.currentCompany, this.records);
     }
 
     async syncImportToBackend() {
@@ -1175,19 +1037,10 @@ class DataProcessor {
         return totalsByCompany;
     }
     
-    async export(companyFilter = null) {
+    export(companyFilter = null) {
         if (!this.core.admin.hasPermission(this.core.currentUser, 'export_payments')) {
             alert('Você não tem permissão para exportar o fluxo de pagamentos.');
             return;
-        }
-        if (!window.XLSX) {
-            showToast('Carregando exportador...', 'info');
-            try {
-                await ensureXlsx();
-            } catch (_) {
-                alert('Não foi possível carregar o exportador (XLSX). Tente novamente.');
-                return;
-            }
         }
         const maxExportRows = 2000;
         const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
@@ -1372,8 +1225,6 @@ class DataProcessor {
         window.DMF_CONTEXT.centrosCusto = this.costCenters;
         this.core.audit?.log?.('NOVO CENTRO', `Centro de Custo adicionado: ${n}`, 'centro_de_custo'); // ALTERADO
         try { registrarEvento('centro_novo', this.core.currentUser, `Centro criado: ${n}`, 'centro'); } catch(e){} // ALTERADO
-        // Persist on backend (best-effort) so admin sees all detected centers across devices.
-        this.syncCostCenterToBackend(n).catch(() => {});
         if (!this.getCenterCompanyOverride(n) && !this.pendingCenterAssignments.has(this._key(n))) {
           this.pendingCenterAssignments.add(this._key(n));
           this.core?.ui?.openCenterAssignmentModal?.(n);
@@ -1381,55 +1232,6 @@ class DataProcessor {
       }
       return true;
     } // ALTERADO
-
-    async syncCostCenterToBackend(centerLabel) {
-      const token = localStorage.getItem('dmf_api_token');
-      if (!token) return false;
-      const label = String(centerLabel || '').trim();
-      if (!label) return false;
-      try {
-        const response = await fetch(`${getApiBase()}/api/cost-centers`, {
-          method: 'POST',
-          cache: 'no-store',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders()
-          },
-          body: JSON.stringify({ center: label, company: this.currentCompany })
-        });
-        return response.ok;
-      } catch (_) {
-        return false;
-      }
-    }
-
-    async loadCostCentersFromBackend() {
-      const token = localStorage.getItem('dmf_api_token');
-      if (!token) return false;
-      try {
-        const response = await fetch(`${getApiBase()}/api/cost-centers`, {
-          cache: 'no-store',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders()
-          }
-        });
-        if (!response.ok) return false;
-        const data = await response.json().catch(() => ({}));
-        const items = Array.isArray(data?.items) ? data.items : [];
-        const centers = items
-          .map(i => String(i.center_label || '').trim())
-          .filter(Boolean);
-        if (!centers.length) return true;
-        // Merge into local list (cache) for offline UX.
-        this.costCenters = this._dedupCaseInsensitive([...(this.costCenters || []), ...centers]);
-        localStorage.setItem(this.core.storageKeys.COST_CENTERS, JSON.stringify(this.costCenters));
-        if (window.DMF_CONTEXT) window.DMF_CONTEXT.centrosCusto = this.costCenters;
-        return true;
-      } catch (_) {
-        return false;
-      }
-    }
 
     getCompanyCenterMap() {
         return {
@@ -1739,25 +1541,17 @@ class UIManager {
         this.userStatusMinInterval = 60000;
         this.companyFilter = 'DMF';
         this.selectedArchiveId = null;
+        this.archiveCollapsedById = {};
         this.flowSyncIntervalMs = 3000;
         this.flowNextSyncAt = null;
         this.flowEventSource = null;
         this.flowStreamReconnectTimer = null;
         this.flowStreamReconnectMs = 2000;
         this.dashboardSyncTimer = null;
-        this.dashboardSyncIntervalMs = 15000;
-        this.dashboardNextSyncAt = null;
         this.pendingCenterCompanyUpdates = new Map();
     }
 
     navigate(viewId, activeButton = null) {
-        // Router options can be passed as 3rd argument (back/forward handling).
-        const opts = arguments.length >= 3 && arguments[2] && typeof arguments[2] === 'object'
-            ? arguments[2]
-            : {};
-        const pushRoute = opts.pushRoute !== false;
-        const replaceRoute = !!opts.replaceRoute;
-
         if (viewId === 'admin' && !this.core.admin.hasPermission(this.core.currentUser, 'admin_access')) {
             this.showAccessDenied({
                 title: 'Acesso negado',
@@ -1773,31 +1567,10 @@ class UIManager {
             return;
         }
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-        const targetView = document.getElementById(viewId);
-        targetView.classList.remove('hidden');
-        targetView.classList.remove('view-enter');
-        void targetView.offsetWidth;
-        targetView.classList.add('view-enter');
-        setTimeout(() => targetView.classList.remove('view-enter'), 160);
-        // Update active button(s) in sidebar + mobile bottom nav.
-        document.querySelectorAll('.btn-side, .mobile-bottom-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById(viewId).classList.remove('hidden');
+        // Update active button
+        document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
-        const navKey = String(activeButton?.getAttribute?.('data-nav') || viewId || '').trim().toLowerCase();
-        const mobileBtn = document.querySelector(`.mobile-bottom-btn[data-nav="${navKey}"]`);
-        if (mobileBtn) mobileBtn.classList.add('active');
-        if (!mobileBtn && viewId === 'payments') {
-            const fallbackPaymentsBtn = document.querySelector(`.mobile-bottom-btn[data-nav="payments"]`);
-            if (fallbackPaymentsBtn) fallbackPaymentsBtn.classList.add('active');
-        }
-
-        const company = viewId === 'payments'
-            ? this.normalizeCompany(activeButton?.getAttribute?.('data-company') || this.core?.data?.currentCompany || this.companyFilter || 'DMF')
-            : null;
-
-        this.updateTopbarTitle(viewId, company);
-        if (pushRoute) {
-            this.setRoute(viewId, company, { replace: replaceRoute });
-        }
 
         // Special handling for Cobli tab
         if (viewId === 'cobli') {
@@ -1807,11 +1580,8 @@ class UIManager {
         }
 
         if (viewId === 'admin') {
-            this.setViewLoading('admin', true);
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
-            }).finally(() => {
-                this.setViewLoading('admin', false);
             });
         }
 
@@ -1824,211 +1594,14 @@ class UIManager {
         if (viewId === 'payments') {
             const company = activeButton?.getAttribute?.('data-company');
             if (company) {
-                this.setViewLoading('payments', true);
                 this.setCompanyFilter(company);
                 this.core.data.setCurrentCompany(company);
                 this.core.data.loadFromBackend(true, company).then(() => {
                     this.renderPaymentsTable();
                     this.updateStats();
-                }).finally(() => {
-                    this.setViewLoading('payments', false);
                 });
             }
         }
-    }
-
-    setViewLoading(viewId, isLoading) {
-        const view = document.getElementById(viewId);
-        if (!view) return;
-        const id = `dmfSkeleton_${viewId}`;
-        let skeleton = document.getElementById(id);
-        if (!isLoading) {
-            if (skeleton) skeleton.remove();
-            return;
-        }
-        if (skeleton) return;
-        skeleton = document.createElement('div');
-        skeleton.id = id;
-        skeleton.className = 'view-skeleton';
-        skeleton.setAttribute('aria-hidden', 'true');
-        skeleton.innerHTML = `
-            <div class="line w40"></div>
-            <div class="line w100"></div>
-            <div class="line w80"></div>
-            <div class="line w60"></div>
-            <div class="line w100"></div>
-        `;
-        view.prepend(skeleton);
-    }
-
-    safeUserKey() {
-        const raw = this.core?.currentUser?.id || this.core?.currentUser?.email || this.core?.currentUser?.username || null;
-        if (!raw) return null;
-        return String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
-    }
-
-    canAccessTab(tab) {
-        const t = String(tab || '').trim().toLowerCase();
-        if (t === 'admin') {
-            return this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
-        }
-        if (t === 'audit') {
-            return this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
-        }
-        return true;
-    }
-
-    setRoute(tab, company = null, { replace = false } = {}) {
-        try {
-            const t = String(tab || '').trim();
-            if (!t) return;
-            const params = new URLSearchParams();
-            params.set('tab', t);
-            if (t === 'payments') {
-                const c = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
-                if (c) params.set('company', c);
-            }
-            const nextUrl = `/?${params.toString()}`;
-            const state = { tab: t, company: params.get('company') || null, saved_at: Date.now() };
-            if (replace) history.replaceState(state, '', nextUrl);
-            else history.pushState(state, '', nextUrl);
-
-            const k = this.safeUserKey();
-            if (k) {
-                localStorage.setItem(`dmf_last_route_${k}`, JSON.stringify(state));
-            }
-        } catch (_) {}
-    }
-
-    initRouterOnce() {
-        if (this.routerBound) return;
-        this.routerBound = true;
-        window.addEventListener('popstate', (e) => {
-            const state = e.state || null;
-            const tab = state?.tab || null;
-            const company = state?.company || null;
-            if (tab) {
-                this.navigateFromRoute(tab, company);
-                return;
-            }
-            // Fallback to parsing URL if state is missing (e.g., direct load / refresh).
-            this.applyInitialRouteFromUrl({ replace: true });
-        });
-    }
-
-    navigateFromRoute(tab, company = null) {
-        const t = String(tab || '').trim().toLowerCase();
-        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli', 'accessdenied']);
-        if (!allowed.has(t)) return;
-        const viewId = t === 'accessdenied' ? 'accessDenied' : t;
-        if (t === 'payments') {
-            const knownCompanies = new Set(['DMF', 'JFX', 'Real Energy']);
-            const normalized = this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
-            const c = knownCompanies.has(normalized) ? normalized : 'DMF';
-            const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
-            const targetButton = allPaymentButtons.find(btn =>
-                this.normalizeCompany(btn.getAttribute('data-company')) === c
-            ) || allPaymentButtons.find(btn => this.normalizeCompany(btn.getAttribute('data-company')) === 'DMF')
-              || allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
-            this.navigate('payments', targetButton || null, { pushRoute: false });
-            return;
-        }
-        const btn = document.querySelector(`[data-nav="${t}"]`);
-        this.navigate(viewId, btn || null, { pushRoute: false });
-    }
-
-    applyInitialRouteFromUrl(opts = {}) {
-        const params = new URLSearchParams(window.location.search || '');
-        const tab = String(params.get('tab') || '').trim().toLowerCase();
-        const company = String(params.get('company') || '').trim();
-        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli', 'accessdenied']);
-        const ROUTE_TTL_MS = 24 * 60 * 60 * 1000;
-        let fallbackNote = '';
-
-        let t = tab && allowed.has(tab) ? tab : null;
-        let c = company || null;
-
-        if (!t) {
-            // Per-user last route (helps PWA resume where user left off).
-            try {
-                const k = this.safeUserKey();
-                if (k) {
-                    const raw = localStorage.getItem(`dmf_last_route_${k}`);
-                    const parsed = raw ? JSON.parse(raw) : null;
-                    if (parsed?.tab && allowed.has(String(parsed.tab).toLowerCase())) {
-                        const savedAt = Number(parsed.saved_at || 0);
-                        if (!savedAt || (Date.now() - savedAt) <= ROUTE_TTL_MS) {
-                            t = String(parsed.tab).toLowerCase();
-                            c = parsed.company || null;
-                        } else {
-                            fallbackNote = 'Abrindo no Dashboard por segurança (última rota expirada).';
-                        }
-                    }
-                }
-            } catch (_) {}
-        }
-
-        if (!t) {
-            t = 'dashboard';
-        }
-
-        // Security default: never auto-open admin from restored state.
-        if (t === 'admin') {
-            t = 'dashboard';
-            fallbackNote = fallbackNote || 'Abrindo no Dashboard por segurança.';
-        }
-
-        // If user has no access to saved route, fallback gracefully.
-        if (!this.canAccessTab(t)) {
-            t = 'dashboard';
-            fallbackNote = fallbackNote || 'Sua última aba não está mais disponível para este usuário.';
-        }
-
-        if (t === 'payments') {
-            const knownCompanies = new Set(['DMF', 'JFX', 'Real Energy']);
-            const normalized = this.normalizeCompany(c || this.core?.data?.currentCompany || this.companyFilter || 'DMF');
-            if (!knownCompanies.has(normalized)) {
-                c = 'DMF';
-                fallbackNote = fallbackNote || 'Empresa inválida; abrindo o fluxo DMF.';
-            } else {
-                c = normalized;
-            }
-        } else {
-            c = null;
-        }
-
-        // Sync URL state once on boot, then navigate without pushing again.
-        if (opts.replace) {
-            this.setRoute(t, c, { replace: true });
-        }
-        this.navigateFromRoute(t, c);
-        if (fallbackNote) {
-            showToast(fallbackNote, 'info', 3000);
-        }
-    }
-
-    updateTopbarTitle(viewId, company = null) {
-        const title = document.getElementById('mobileViewTitle');
-        if (!title) return;
-        const vRaw = String(viewId || '').trim();
-        const v = vRaw.toLowerCase();
-        if (v === 'payments') {
-            title.textContent = `Fluxo • ${this.normalizeCompany(company || this.core?.data?.currentCompany || this.companyFilter || 'DMF')}`;
-            return;
-        }
-        const labels = {
-            dashboard: 'Dashboard',
-            audit: 'Auditoria',
-            admin: 'Administração',
-            assistente: 'Assistente',
-            cobli: 'Cobli',
-            accessdenied: 'Acesso negado'
-        };
-        if (v === 'accessdenied') {
-            title.textContent = 'Acesso negado';
-            return;
-        }
-        title.textContent = labels[v] || 'DMF Fluxo';
     }
 
     showLogin() {
@@ -2049,10 +1622,6 @@ class UIManager {
 
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         view.classList.remove('hidden');
-        view.classList.remove('view-enter');
-        void view.offsetWidth;
-        view.classList.add('view-enter');
-        setTimeout(() => view.classList.remove('view-enter'), 160);
 
         document.querySelectorAll('.btn-side').forEach(btn => btn.classList.remove('active'));
         if (activeButton) activeButton.classList.add('active');
@@ -2151,14 +1720,6 @@ class UIManager {
         const title = document.getElementById('paymentsTitle');
         if (title) {
             title.textContent = `Fluxo de Pagamentos ${this.companyFilter}`;
-        }
-        const mobileFlowBtn = document.querySelector('.mobile-bottom-btn[data-nav="payments"]');
-        if (mobileFlowBtn) {
-            mobileFlowBtn.setAttribute('data-company', this.companyFilter);
-        }
-        const mobileFlowLabel = document.getElementById('mobileFlowLabel');
-        if (mobileFlowLabel) {
-            mobileFlowLabel.textContent = `Fluxo ${this.companyFilter === 'Real Energy' ? 'Real' : this.companyFilter}`;
         }
     }
 
@@ -2276,13 +1837,7 @@ class UIManager {
             document.getElementById('adminMenu').classList.remove('hidden');
         }
 
-        this.setViewLoading('dashboard', true);
         this.loadInitialDashboardData().then(() => {
-            // Pull the authoritative cost center registry from backend (across companies/devices).
-            this.core.data.loadCostCentersFromBackend().then(() => {
-                this.populateCostCentersDatalist?.();
-                this.renderCenterCompanyEditor?.();
-            }).catch(() => {});
             this.renderPaymentsTable();
             this.updateStats();
             this.initCharts();
@@ -2291,13 +1846,10 @@ class UIManager {
                 this.renderCompanyTotals();
                 this.renderCenterCompanyEditor();
             });
-        }).finally(() => {
-            // Avoid racing two simultaneous loadFromBackend() calls right after login.
-            this.startDashboardSummaryAutoRefresh();
-            this.setViewLoading('dashboard', false);
         });
         this.startBackendStatusMonitor();
         this.startSessionMonitor();
+        this.startDashboardSummaryAutoRefresh();
         this.renderAdminContent();
         this.applyRolePermissions();
         this.populateBudgetInputs();
@@ -2305,8 +1857,7 @@ class UIManager {
         this.initPaymentsFilters();
         this.initAuditFilters();
         this.syncCurrentUserRole();
-        this.initRouterOnce();
-        this.applyInitialRouteFromUrl({ replace: true });
+        this.applyInitialRouteFromUrl();
         console.log('DMF_CONTEXT after setupDashboard:', window.DMF_CONTEXT);
     }
 
@@ -2317,7 +1868,6 @@ class UIManager {
 
     async loadInitialDashboardData() {
         let company = this.normalizeCompany(this.core?.data?.currentCompany || this.companyFilter || 'DMF');
-        let hadUserPersistedCompany = false;
         try {
             // Prefer per-user last company to avoid cross-user localStorage bleed.
             const raw = this.core?.currentUser?.id || this.core?.currentUser?.email || this.core?.currentUser?.username || null;
@@ -2325,35 +1875,23 @@ class UIManager {
                 const safe = String(raw).trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_');
                 const k = `dmf_current_company_${safe}`;
                 const persisted = localStorage.getItem(k);
-                if (persisted) {
-                    company = this.normalizeCompany(persisted);
-                    hadUserPersistedCompany = true;
-                }
+                if (persisted) company = this.normalizeCompany(persisted);
             }
         } catch (_) {}
         this.core.data.setCurrentCompany(company);
         this.setCompanyFilter(company);
 
         const primaryOk = await this.core.data.loadFromBackend(true, company);
-        if (primaryOk) {
-            // If this company has no data and the user did not explicitly choose/persist it yet,
-            // try to auto-select another company that has payments to avoid a "blank" dashboard.
-            const hasData = Array.isArray(this.core?.data?.records) && this.core.data.records.length > 0;
-            if (hasData) return true;
-            if (hadUserPersistedCompany) return true;
-        }
+        if (primaryOk) return true;
 
         // UI-based fallback (buttons) can be hidden depending on role; prefer backend source of truth.
         let fallbackCompany = null;
-        let companiesList = [];
         try {
             const resp = await fetch(`${getApiBase()}/api/companies`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
             if (resp.ok) {
                 const data = await resp.json().catch(() => ({}));
                 const list = Array.isArray(data?.companies) ? data.companies : [];
-                companiesList = list.map(c => this.normalizeCompany(c)).filter(Boolean);
-                companiesList = Array.from(new Set(companiesList));
-                fallbackCompany = companiesList.find(c => c !== company) || companiesList[0] || null;
+                fallbackCompany = list.find(c => this.normalizeCompany(c) !== company) || list[0] || null;
             }
         } catch (_) {}
 
@@ -2361,31 +1899,10 @@ class UIManager {
             const fallbackButton = this.getFirstAvailableCompanyButton();
             fallbackCompany = fallbackButton?.getAttribute('data-company') || null;
         }
-        if (!fallbackCompany) return primaryOk;
+        if (!fallbackCompany) return false;
 
         const normalizedFallback = this.normalizeCompany(fallbackCompany);
-        if (!normalizedFallback || normalizedFallback === company) return primaryOk;
-
-        // If initial load was "ok but empty", try all companies (small allow-list) to find one with data.
-        if (primaryOk && !hadUserPersistedCompany) {
-            if (!companiesList.length) {
-                companiesList = [company, normalizedFallback].map(c => this.normalizeCompany(c)).filter(Boolean);
-                companiesList = Array.from(new Set(companiesList));
-            }
-            for (const c of companiesList) {
-                if (!c || c === company) continue;
-                this.core.data.setCurrentCompany(c);
-                this.setCompanyFilter(c);
-                const ok = await this.core.data.loadFromBackend(true, c);
-                if (ok && Array.isArray(this.core?.data?.records) && this.core.data.records.length > 0) {
-                    return true;
-                }
-            }
-            // Keep the original company if none had data.
-            this.core.data.setCurrentCompany(company);
-            this.setCompanyFilter(company);
-            return true;
-        }
+        if (!normalizedFallback || normalizedFallback === company) return false;
 
         this.core.data.setCurrentCompany(normalizedFallback);
         this.setCompanyFilter(normalizedFallback);
@@ -2398,7 +1915,6 @@ class UIManager {
         const refresh = () => {
             const currentView = document.querySelector('.view:not(.hidden)')?.id;
             if (currentView === 'payments') return;
-            this.dashboardNextSyncAt = Date.now() + this.dashboardSyncIntervalMs;
             this.core.data.loadFromBackend(true, this.core.data.currentCompany).then((ok) => {
                 if (!ok) return;
                 this.updateStats();
@@ -2408,8 +1924,7 @@ class UIManager {
         };
 
         refresh();
-        this.dashboardNextSyncAt = Date.now() + this.dashboardSyncIntervalMs;
-        this.dashboardSyncTimer = setInterval(refresh, this.dashboardSyncIntervalMs);
+        this.dashboardSyncTimer = setInterval(refresh, 15000);
     }
 
     stopDashboardSummaryAutoRefresh() {
@@ -2417,54 +1932,51 @@ class UIManager {
             clearInterval(this.dashboardSyncTimer);
             this.dashboardSyncTimer = null;
         }
-        this.dashboardNextSyncAt = null;
+    }
+
+    applyInitialRouteFromUrl() {
+        const params = new URLSearchParams(window.location.search || '');
+        const tab = String(params.get('tab') || '').trim().toLowerCase();
+        if (!tab) return;
+
+        const allowed = new Set(['dashboard', 'payments', 'audit', 'admin', 'assistente', 'cobli']);
+        if (!allowed.has(tab)) return;
+
+        if (tab === 'payments') {
+            const companyRaw = String(params.get('company') || '').trim();
+            const company = this.normalizeCompany(companyRaw || this.companyFilter || 'DMF');
+            const allPaymentButtons = Array.from(document.querySelectorAll('[data-nav="payments"][data-company]'));
+            let targetButton = allPaymentButtons.find(btn =>
+                this.normalizeCompany(btn.getAttribute('data-company')) === company
+            );
+            if (!targetButton) {
+                targetButton = allPaymentButtons[0] || document.querySelector('[data-nav="payments"]');
+            }
+            this.navigate('payments', targetButton || null);
+            return;
+        }
+
+        const btn = document.querySelector(`[data-nav="${tab}"]`);
+        this.navigate(tab, btn || null);
     }
 
     startBackendStatusMonitor() {
         if (this.backendStatusTimer) return;
-        const badge = document.getElementById('mobileNetBadge');
-        const setBadge = (isOffline, text = 'Offline') => {
-            if (!badge) return;
-            badge.textContent = text;
-            badge.classList.toggle('hidden', !isOffline);
-            badge.classList.toggle('is-offline', isOffline);
-        };
-
-        const netListener = () => {
-            if (navigator.onLine === false) {
-                setBadge(true, 'Offline');
-            } else {
-                setBadge(false);
-            }
-        };
-        window.addEventListener('online', netListener);
-        window.addEventListener('offline', netListener);
-        netListener();
-
         const check = async () => {
             try {
-                if (navigator.onLine === false) {
-                    setBackendStatus('Servidor: sem internet', 'error');
-                    setBadge(true, 'Offline');
-                    return;
-                }
                 const response = await fetch(`${getApiBase()}/api/health`, { method: 'GET', cache: 'no-store' });
                 if (!response.ok) {
                     setBackendStatus('Servidor: indisponível', 'error');
-                    setBadge(true, 'Offline');
                     return;
                 }
                 const data = await response.json();
                 if (data && data.db_ready === false) {
                     setBackendStatus(`Servidor: online (banco iniciando)`, 'warn');
-                    setBadge(false);
                     return;
                 }
                 setBackendStatus(`Servidor: online (${formatTimeNow()})`, 'ok');
-                setBadge(false);
             } catch (_) {
                 setBackendStatus('Servidor: indisponível', 'error');
-                setBadge(true, 'Offline');
             }
         };
         check();
@@ -2514,10 +2026,8 @@ class UIManager {
 
             const syncEl = document.getElementById('syncCountdown');
             if (syncEl) {
-                const currentView = document.querySelector('.view:not(.hidden)')?.id;
-                const nextAt = (currentView === 'payments' ? this.flowNextSyncAt : this.dashboardNextSyncAt) || null;
-                if (nextAt) {
-                    const remainingMs = Math.max(nextAt - Date.now(), 0);
+                if (this.flowNextSyncAt) {
+                    const remainingMs = Math.max(this.flowNextSyncAt - Date.now(), 0);
                     const syncMinutes = Math.floor(remainingMs / 60000);
                     const syncSeconds = Math.floor((remainingMs % 60000) / 1000);
                     const mm = String(syncMinutes).padStart(2, '0');
@@ -2814,6 +2324,7 @@ class UIManager {
         const addPaymentBtn = document.getElementById('btnAddPayment');
         const auditNavBtn = document.querySelector('[data-nav="audit"]');
         const archiveBtn = document.getElementById('btnArchiveFlow');
+        const archiveBottomBtn = document.getElementById('btnArchiveFlowBottom');
         const paymentsHistoryTabBtn = document.querySelector('[data-payments-tab="history"]');
         const archiveFilterArea = document.querySelector('.archive-filters');
         const archiveCompareArea = document.querySelector('.archive-compare');
@@ -2828,6 +2339,7 @@ class UIManager {
         const canAudit = this.core.admin.hasPermission(this.core.currentUser, 'audit_access');
         const canViewArchives = this.core.admin.hasPermission(this.core.currentUser, 'view_archives');
         const canArchiveFlow = this.core.admin.hasPermission(this.core.currentUser, 'archive_flow');
+        const canArchiveCurrent = canArchiveFlow && isAdminUser(this.core.currentUser);
         const canCompareArchives = this.core.admin.hasPermission(this.core.currentUser, 'compare_archives');
         const canSign = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
 
@@ -2846,6 +2358,10 @@ class UIManager {
         if (archiveBtn) {
             archiveBtn.classList.toggle('hidden', !canArchiveFlow);
             archiveBtn.disabled = !canArchiveFlow;
+        }
+        if (archiveBottomBtn) {
+            archiveBottomBtn.classList.toggle('hidden', !canArchiveCurrent);
+            archiveBottomBtn.disabled = !canArchiveCurrent;
         }
         if (auditNavBtn) {
             auditNavBtn.classList.toggle('hidden', !canAudit);
@@ -2916,15 +2432,9 @@ class UIManager {
                 } else if (action === 'change-password') {
                     this.changePassword(id);
                 } else if (action === 'revoke-session') {
-                    this.reauthAdminForAction(`revogar sessão do usuário #${id}`).then((t) => {
-                        if (!t) return;
-                        this.core.admin.revokeSession(id, t, { skipConfirm: true });
-                    });
+                    this.core.admin.revokeSession(id);
                 } else if (action === 'delete') {
-                    this.reauthAdminForAction(`excluir o usuário #${id}`).then((t) => {
-                        if (!t) return;
-                        this.core.admin.deleteUser(id, t);
-                    });
+                    this.core.admin.deleteUser(id);
                 }
             });
             body.dataset.boundUsers = 'true';
@@ -3199,89 +2709,53 @@ class UIManager {
         return key;
     }
 
-    async fetchMonthlyReportFromBackend(monthKey) {
-        const token = localStorage.getItem('dmf_api_token');
-        if (!token) return null;
+    loadBudgets() {
         try {
-            const response = await fetch(`${getApiBase()}/api/reports/monthly?month=${encodeURIComponent(monthKey)}`, {
-                cache: 'no-store',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...getAuthHeaders()
-                }
-            });
-            if (!response.ok) return null;
-            return await response.json();
+            const raw = localStorage.getItem('dmf_budget_limits');
+            return raw ? JSON.parse(raw) : {};
         } catch (_) {
-            return null;
+            return {};
         }
     }
 
-    async saveBudgetsToBackend(monthKey, budgets) {
-        const token = localStorage.getItem('dmf_api_token');
-        if (!token) return false;
-        try {
-            const response = await fetch(`${getApiBase()}/api/budgets?month=${encodeURIComponent(monthKey)}`, {
-                method: 'PUT',
-                cache: 'no-store',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...getAuthHeaders()
-                },
-                body: JSON.stringify({ budgets })
-            });
-            return response.ok;
-        } catch (_) {
-            return false;
-        }
+    saveBudgets(budgets) {
+        localStorage.setItem('dmf_budget_limits', JSON.stringify(budgets || {}));
     }
 
-    async renderMonthlyReports() {
+    renderMonthlyReports() {
         const monthKey = this.getSelectedReportMonth();
-        const payload = await this.fetchMonthlyReportFromBackend(monthKey);
-
-        const companyTotals = payload?.report?.totals_by_company || {};
-        const grandTotal = Number(payload?.report?.grand_total || 0) || 0;
-        const topCenters = Array.isArray(payload?.report?.top_cost_centers) ? payload.report.top_cost_centers : [];
-        const budgets = payload?.budgets && typeof payload.budgets === 'object' ? payload.budgets : {};
-
-        // Keep budget inputs in sync with backend values (admin only).
-        this.populateBudgetInputs(budgets);
-
+        const companyTotals = this.core.data.getCompanyTotalsForMonth(monthKey);
+        const costTotals = this.core.data.getCostCenterTotalsForMonth(monthKey);
         const companyList = document.getElementById('reportCompanyTotals');
         const costList = document.getElementById('reportCostCenters');
-
         if (companyList) {
-            const rows = [];
-            rows.push(`<div class="report-item report-item-total"><span>Total (3 empresas)</span><strong>R$ ${grandTotal.toLocaleString('pt-BR')}</strong></div>`);
-            Object.entries(companyTotals).forEach(([name, value]) => {
-                rows.push(`<div class="report-item"><span>${name}</span><strong>R$ ${Number(value || 0).toLocaleString('pt-BR')}</strong></div>`);
-            });
-            companyList.innerHTML = rows.join('') || '<div>Nenhum dado no período.</div>';
+            const items = Object.entries(companyTotals).map(([name, value]) => `
+                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
+            `).join('');
+            companyList.innerHTML = items || '<div>Nenhum dado no período.</div>';
         }
-
         if (costList) {
-            const items = topCenters.map((item) => `
-                <div class="report-item"><span>${item.center}</span><strong>R$ ${Number(item.total || 0).toLocaleString('pt-BR')}</strong></div>
+            const sorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 8);
+            const items = sorted.map(([name, value]) => `
+                <div class="report-item"><span>${name}</span><strong>R$ ${value.toLocaleString('pt-BR')}</strong></div>
             `).join('');
             costList.innerHTML = items || '<div>Nenhum dado no período.</div>';
         }
 
+        const budgets = this.loadBudgets();
         const budgetDMF = Number(budgets.DMF) || 0;
         const budgetJFX = Number(budgets.JFX) || 0;
         const budgetReal = Number(budgets['Real Energy']) || 0;
         const alerts = [];
-
-        if (budgetDMF > 0 && Number(companyTotals.DMF || 0) > budgetDMF) {
-            alerts.push(`DMF excedeu o orçamento: R$ ${Number(companyTotals.DMF || 0).toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
+        if (budgetDMF > 0 && companyTotals.DMF > budgetDMF) {
+            alerts.push(`DMF excedeu o orçamento: R$ ${companyTotals.DMF.toLocaleString('pt-BR')} / R$ ${budgetDMF.toLocaleString('pt-BR')}`);
         }
-        if (budgetJFX > 0 && Number(companyTotals.JFX || 0) > budgetJFX) {
-            alerts.push(`JFX excedeu o orçamento: R$ ${Number(companyTotals.JFX || 0).toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
+        if (budgetJFX > 0 && companyTotals.JFX > budgetJFX) {
+            alerts.push(`JFX excedeu o orçamento: R$ ${companyTotals.JFX.toLocaleString('pt-BR')} / R$ ${budgetJFX.toLocaleString('pt-BR')}`);
         }
-        if (budgetReal > 0 && Number(companyTotals['Real Energy'] || 0) > budgetReal) {
-            alerts.push(`Real Energy excedeu o orçamento: R$ ${Number(companyTotals['Real Energy'] || 0).toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
+        if (budgetReal > 0 && companyTotals['Real Energy'] > budgetReal) {
+            alerts.push(`Real Energy excedeu o orçamento: R$ ${companyTotals['Real Energy'].toLocaleString('pt-BR')} / R$ ${budgetReal.toLocaleString('pt-BR')}`);
         }
-
         const alertBox = document.getElementById('budgetAlerts');
         if (alertBox) {
             if (alerts.length) {
@@ -3312,21 +2786,22 @@ class UIManager {
         }
     }
 
-    populateBudgetInputs(budgets = null) {
-        const data = budgets && typeof budgets === 'object' ? budgets : {};
+    populateBudgetInputs() {
+        const budgets = this.loadBudgets();
         const dmf = document.getElementById('budgetDMF');
         const jfx = document.getElementById('budgetJFX');
         const real = document.getElementById('budgetReal');
-        if (dmf) dmf.value = Number(data.DMF || 0) || '';
-        if (jfx) jfx.value = Number(data.JFX || 0) || '';
-        if (real) real.value = Number(data['Real Energy'] || 0) || '';
+        if (dmf) dmf.value = Number(budgets.DMF || 0) || '';
+        if (jfx) jfx.value = Number(budgets.JFX || 0) || '';
+        if (real) real.value = Number(budgets['Real Energy'] || 0) || '';
         const isAdmin = this.core.admin.hasPermission(this.core.currentUser, 'admin_access');
         const budgetSection = document.getElementById('budgetSection');
         if (budgetSection) {
             budgetSection.classList.toggle('hidden', !isAdmin);
         }
     }
-getArchiveFilterState() {
+
+    getArchiveFilterState() {
         const search = (document.getElementById('archiveSearchInput')?.value || '').trim().toLowerCase();
         const startValue = document.getElementById('archiveStart')?.value || '';
         const endValue = document.getElementById('archiveEnd')?.value || '';
@@ -3473,11 +2948,16 @@ getArchiveFilterState() {
             const pending = Math.max(item.stats.count - item.stats.signed, 0);
             const isActive = this.selectedArchiveId === archive.id;
             const isNewest = newestId && archive.id === newestId;
+            const isCollapsed = this.archiveCollapsedById[archive.id] === true;
             return `
                 <div class="flow-archive-card ${isActive ? 'active' : ''}" data-archive-id="${archive.id}" role="button" tabindex="0">
                     <div class="flow-archive-title">
-                        ${archive.label}
-                        ${isNewest ? '<span class="flow-archive-badge">Novo</span>' : ''}
+                        <span class="flow-archive-title-text">${archive.label}</span>
+                        <span class="flow-archive-title-right">
+                            ${isNewest ? '<span class="flow-archive-badge">Novo</span>' : ''}
+                            ${(isCollapsed && pending > 0) ? '<span class="flow-archive-pending-badge">Pendencias</span>' : ''}
+                            <button class="archive-expand-toggle" type="button" data-archive-toggle="${archive.id}" aria-label="${isCollapsed ? 'Expandir fluxo' : 'Recolher fluxo'}">${isCollapsed ? '&#9656;' : '&#9662;'}</button>
+                        </span>
                     </div>
                     <div class="flow-archive-meta">${company} • ${createdBy}</div>
                     <div class="flow-archive-meta">${createdAt}</div>
@@ -3494,11 +2974,24 @@ getArchiveFilterState() {
 
         if (!list.dataset.boundArchiveClick) {
             list.addEventListener('click', (event) => {
-                const button = event.target.closest('[data-archive-id]');
+                const target = event.target;
+                if (!(target instanceof Element)) return;
+                const toggleButton = target.closest('[data-archive-toggle]');
+                if (toggleButton) {
+                    const id = toggleButton.getAttribute('data-archive-toggle');
+                    if (!id) return;
+                    this.selectedArchiveId = id;
+                    this.archiveCollapsedById[id] = !(this.archiveCollapsedById[id] === true);
+                    this.renderFlowArchivesList();
+                    return;
+                }
+
+                const button = target.closest('[data-archive-id]');
                 if (!button) return;
                 const id = button.getAttribute('data-archive-id');
                 const selected = (this.core.data.archives || []).find(a => a.id === id);
                 this.selectedArchiveId = id;
+                this.archiveCollapsedById[id] = false;
                 list.querySelectorAll('.flow-archive-card').forEach(b => b.classList.remove('active'));
                 button.classList.add('active');
                 this.renderFlowArchiveDetail(selected);
@@ -3506,11 +2999,24 @@ getArchiveFilterState() {
             list.dataset.boundArchiveClick = 'true';
         }
 
+        if (this.selectedArchiveId) {
+            const selected = archives.find(a => a.id === this.selectedArchiveId);
+            if (selected) {
+                if (this.archiveCollapsedById[this.selectedArchiveId] === true) {
+                    this.renderFlowArchiveDetail(null);
+                } else {
+                    this.renderFlowArchiveDetail(selected);
+                }
+                return;
+            }
+        }
+
         const first = list.querySelector('[data-archive-id]');
-        if (first && !list.querySelector('.flow-archive-card.active')) {
+        if (first) {
             first.classList.add('active');
             const id = first.getAttribute('data-archive-id');
             this.selectedArchiveId = id;
+            this.archiveCollapsedById[id] = false;
             const selected = archives.find(a => a.id === id);
             this.renderFlowArchiveDetail(selected);
         }
@@ -3575,6 +3081,7 @@ getArchiveFilterState() {
         const canDelete = this.core.admin.hasPermission(this.core.currentUser, 'delete_archive');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_archives') ||
             this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
+        const canSignArchive = this.core.admin.hasPermission(this.core.currentUser, 'sign_payments');
         const payments = Array.isArray(archive.payments) ? archive.payments : [];
         const rows = payments.map(p => `
             <tr>
@@ -3587,6 +3094,7 @@ getArchiveFilterState() {
                 <td>${p.assinatura ? 'Assinado' : 'Pendente'}</td>
                 <td>${p.assinatura ? `Assinado por ${p.assinatura.usuarioNome}` : '-'}</td>
                 <td>${p.assinatura?.hash || '-'}</td>
+                <td>${(!p.assinatura && canSignArchive) ? `<button class="btn btn-primary btn-compact" data-archive-sign="${archive.id}" data-payment-id="${p.id}">Assinar</button>` : '-'}</td>
             </tr>
         `).join('');
 
@@ -3611,6 +3119,7 @@ getArchiveFilterState() {
                             <th>Status</th>
                             <th>Assinatura</th>
                             <th>ID da Assinatura</th>
+                            <th>Ações</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -3695,168 +3204,6 @@ getArchiveFilterState() {
             modal.classList.add('is-open');
             if(modalId === 'addPaymentModal'){ this.populateCostCentersDatalist(); } // ALTERADO
         }
-    }
-
-    async reauthAdminForAction(actionLabel) {
-        // Shows a modal asking the current admin password, then asks for confirmation.
-        // Resolves to a short-lived reauth token (string) or null if canceled/failed.
-        const modal = document.getElementById('reauthModal');
-        if (!modal) {
-            // Fallback to native confirm if modal missing.
-            if (!confirm(`Confirmar ação: ${actionLabel}?`)) return null;
-            return null;
-        }
-
-        const titleEl = document.getElementById('reauthTitle');
-        const descEl = document.getElementById('reauthDescription');
-        const stepPwd = document.getElementById('reauthStepPassword');
-        const stepConfirm = document.getElementById('reauthStepConfirm');
-        const pwdInput = document.getElementById('reauthPassword');
-        const errEl = document.getElementById('reauthError');
-        const btnOk = document.getElementById('btnReauthConfirm');
-        const btnCancel = document.getElementById('btnReauthCancel');
-
-        const setError = (msg) => {
-            if (!errEl) return;
-            if (!msg) {
-                errEl.classList.add('hidden');
-                errEl.textContent = '';
-                return;
-            }
-            errEl.textContent = msg;
-            errEl.classList.remove('hidden');
-        };
-
-        if (titleEl) titleEl.textContent = `Ação sensível`;
-        if (descEl) descEl.textContent = `Para ${actionLabel}, digite a senha do admin.`;
-        if (stepPwd) stepPwd.classList.remove('hidden');
-        if (stepConfirm) stepConfirm.classList.add('hidden');
-        if (pwdInput) pwdInput.value = '';
-        setError('');
-        if (btnOk) btnOk.textContent = 'Confirmar';
-
-        modal.classList.add('is-open');
-        modal.setAttribute('aria-hidden', 'false');
-        try { pwdInput && pwdInput.focus(); } catch (_) {}
-
-        return await new Promise((resolve) => {
-            let stage = 'password';
-            let reauthToken = null;
-            let done = false;
-
-            let cleanup = () => {
-                if (done) return;
-                done = true;
-                try { modal.classList.remove('is-open'); } catch (_) {}
-                try { modal.setAttribute('aria-hidden', 'true'); } catch (_) {}
-                if (btnOk) btnOk.disabled = false;
-                if (btnCancel) btnCancel.disabled = false;
-                if (pwdInput) pwdInput.disabled = false;
-                setError('');
-                if (pwdInput) pwdInput.value = '';
-                if (titleEl) titleEl.textContent = 'Confirmar Ação';
-                if (descEl) descEl.textContent = 'Digite a senha do admin para continuar.';
-                if (stepPwd) stepPwd.classList.remove('hidden');
-                if (stepConfirm) stepConfirm.classList.add('hidden');
-                resolve(reauthToken);
-            };
-
-            const onCancel = () => {
-                reauthToken = null;
-                cleanup();
-            };
-
-            const onOk = async () => {
-                if (stage === 'confirm') {
-                    triggerHaptic('confirm');
-                    cleanup();
-                    return;
-                }
-
-                const password = String(pwdInput?.value || '');
-                if (!password) {
-                    setError('Digite a senha do admin.');
-                    return;
-                }
-
-                setError('');
-                if (btnOk) btnOk.disabled = true;
-                if (btnCancel) btnCancel.disabled = true;
-                if (pwdInput) pwdInput.disabled = true;
-
-                try {
-                    const resp = await fetch(`${getApiBase()}/api/auth/reauth`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            ...getAuthHeaders()
-                        },
-                        body: JSON.stringify({ password })
-                    });
-                    if (!resp.ok) {
-                        if (resp.status === 401) {
-                            setError('Senha incorreta.');
-                        } else if (resp.status === 403) {
-                            setError('Você não tem permissão para esta ação.');
-                        } else {
-                            setError('Falha ao validar senha. Tente novamente.');
-                        }
-                        if (btnOk) btnOk.disabled = false;
-                        if (btnCancel) btnCancel.disabled = false;
-                        if (pwdInput) pwdInput.disabled = false;
-                        try { pwdInput && pwdInput.focus(); } catch (_) {}
-                        return;
-                    }
-                    const data = await resp.json().catch(() => ({}));
-                    reauthToken = String(data.token || '').trim() || null;
-                    if (!reauthToken) {
-                        setError('Falha ao validar senha. Tente novamente.');
-                        if (btnOk) btnOk.disabled = false;
-                        if (btnCancel) btnCancel.disabled = false;
-                        if (pwdInput) pwdInput.disabled = false;
-                        return;
-                    }
-
-                    // Stage 2: explicit confirmation.
-                    stage = 'confirm';
-                    if (titleEl) titleEl.textContent = `Confirmar: ${actionLabel}`;
-                    if (descEl) descEl.textContent = 'Esta ação pode afetar usuários e acesso ao sistema.';
-                    if (stepPwd) stepPwd.classList.add('hidden');
-                    if (stepConfirm) stepConfirm.classList.remove('hidden');
-                    if (btnOk) btnOk.textContent = 'Confirmar';
-                    if (btnOk) btnOk.disabled = false;
-                    if (btnCancel) btnCancel.disabled = false;
-                } catch (_) {
-                    setError('Servidor indisponível. Tente novamente.');
-                    if (btnOk) btnOk.disabled = false;
-                    if (btnCancel) btnCancel.disabled = false;
-                    if (pwdInput) pwdInput.disabled = false;
-                }
-            };
-
-            const onKey = (e) => {
-                if (e.key === 'Escape') onCancel();
-                if (e.key === 'Enter') onOk();
-            };
-
-            btnCancel && btnCancel.addEventListener('click', onCancel, { once: true });
-            btnOk && btnOk.addEventListener('click', onOk);
-            modal.addEventListener('keydown', onKey);
-
-            // Ensure modal closes if user clicks outside and we still resolve null.
-            const outsideClose = (event) => {
-                if (event.target === modal) onCancel();
-            };
-            window.addEventListener('click', outsideClose, { once: true });
-
-            // When we cleanup, remove listeners that were not once-bound.
-            const origCleanup = cleanup;
-            cleanup = () => {
-                try { btnOk && btnOk.removeEventListener('click', onOk); } catch (_) {}
-                try { modal.removeEventListener('keydown', onKey); } catch (_) {}
-                origCleanup();
-            };
-        });
     }
 
     openCenterAssignmentModal(centerName) {
@@ -3962,9 +3309,7 @@ getArchiveFilterState() {
         const cargo = formData.get('editUserRole');
 
         if (nome && usuario && email && cargo) {
-            const t = await this.reauthAdminForAction(`editar o usuário #${id}`);
-            if (!t) return;
-            await this.core.admin.updateUser(id, { nome, usuario, email, cargo }, t);
+            await this.core.admin.updateUser(id, { nome, usuario, email, cargo });
             this.closeModal('editUserModal');
             this.renderUsersTable();
             form.reset();
@@ -3988,9 +3333,7 @@ getArchiveFilterState() {
             alert('As senhas não coincidem.');
             return;
         }
-        const t = await this.reauthAdminForAction(`trocar a senha do usuário #${id}`);
-        if (!t) return;
-        await this.core.admin.updateUser(id, { senha: newPassword }, t);
+        await this.core.admin.updateUser(id, { senha: newPassword });
         this.closeModal('changePasswordModal');
         this.renderUsersTable();
         form.reset();
@@ -4023,18 +3366,6 @@ getArchiveFilterState() {
             if (aTime !== bTime) return aTime - bTime;
             return String(a?.id || '').localeCompare(String(b?.id || ''));
         });
-
-        if (!rows.length) {
-            const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
-            body.innerHTML = `
-                <tr>
-                    <td colspan="9" class="empty-row">
-                        Nenhum pagamento encontrado para ${company}. Clique em "Recarregar do servidor" ou "Importar".
-                    </td>
-                </tr>
-            `;
-            return;
-        }
 
         body.innerHTML = rows.map(p => {
             const assinaturaTime = p.assinatura?.dataISO
@@ -4111,19 +3442,7 @@ getArchiveFilterState() {
         const pending = data.filter(p => !p.assinatura).length;
         document.getElementById('totalAssinados').innerText = signed;
         document.getElementById('totalPendentes').innerText = pending;
-
-        // If the flow is empty, be explicit: this usually means "not imported yet" or "wrong company selected".
-        if (!Array.isArray(data) || data.length === 0) {
-            const nextAction = document.getElementById('nextActionText');
-            const pendingEl = document.getElementById('pendingCount');
-            const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
-            if (pendingEl) pendingEl.textContent = '0';
-            if (nextAction) {
-                nextAction.textContent = `Nenhum pagamento encontrado para ${company}. Se isso estiver errado, troque a empresa no menu ou clique em Importar/Recarregar.`;
-            }
-        } else {
-            this.updateDashboardSummary && this.updateDashboardSummary(pending);
-        }
+        this.updateDashboardSummary && this.updateDashboardSummary(pending);
     }
 
     renderCompanyTotals() {
@@ -4213,17 +3532,6 @@ getArchiveFilterState() {
     initCharts() {
         const canvas = document.getElementById('financeChart');
         if (!canvas) return;
-        if (!window.Chart) {
-            // Lazy-load Chart.js for faster app boot on PWA.
-            showToast('Carregando gráficos...', 'info', 1800);
-            ensureChartJs().then(() => {
-                // Re-run once loaded.
-                this.initCharts();
-            }).catch(() => {
-                // Keep dashboard usable even if chart lib fails.
-            });
-            return;
-        }
         const ctx = canvas.getContext('2d');
         if (this.financeChart) {
             this.financeChart.destroy();
@@ -4722,7 +4030,7 @@ class AdminManager {
         return newUser;
     }
 
-    async updateUser(id, updates, reauthToken = null) {
+    async updateUser(id, updates) {
         if (!this.requireAdmin()) return;
         const user = this.users.find(u => Number(u.id) === Number(id));
         if (!user) return;
@@ -4767,7 +4075,6 @@ class AdminManager {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 },
                 body: JSON.stringify(payload)
@@ -4821,7 +4128,7 @@ class AdminManager {
         alert('Usuário atualizado com sucesso.');
     }
 
-    async deleteUser(id, reauthToken = null) {
+    async deleteUser(id) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
             alert('Não é permitido excluir o próprio usuário logado.');
@@ -4831,7 +4138,6 @@ class AdminManager {
             const response = await fetch(`${getApiBase()}/api/users/${id}`, {
                 method: 'DELETE',
                 headers: {
-                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 }
             });
@@ -4999,22 +4305,18 @@ class AdminManager {
         }
     }
 
-    async revokeSession(id, reauthToken = null, opts = {}) {
+    async revokeSession(id) {
         if (!this.requireAdmin()) return;
         if (this.core.currentUser && Number(this.core.currentUser.id) === Number(id)) {
             alert('Use "Revogar Sessão" para si mesmo nas configurações da sessão.');
             return;
         }
-        const skipConfirm = !!opts.skipConfirm;
-        if (!skipConfirm) {
-            if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
-        }
+        if (!confirm('Revogar sessão deste usuário? Ele será desconectado em até 10s.')) return;
         try {
             const response = await fetch(`${getApiBase()}/api/auth/revoke/${id}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(reauthToken ? { 'X-Admin-Reauth': String(reauthToken) } : {}),
                     ...getAuthHeaders()
                 }
             });
@@ -5262,14 +4564,6 @@ class CobliManager {
         const mapContainer = document.getElementById('mapContainer');
         if (!mapContainer) return;
 
-        if (!(window.L && typeof window.L.map === 'function')) {
-            showToast('Carregando mapa...', 'info', 1800);
-            ensureLeaflet().then(() => {
-                this.initMap();
-            }).catch(() => {});
-            return;
-        }
-
         // Initialize Leaflet map centered on Brazil
         this.map = L.map('mapContainer').setView([-15.7801, -47.9292], 4);
 
@@ -5362,7 +4656,6 @@ function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = nu
 
 // Event listeners for modal forms
 function initDomBindings() {
-    setupPwaUpdateBanner();
     const createUserForm = document.getElementById('createUserForm');
     const createRoleForm = document.getElementById('createRoleForm');
     const editUserForm = document.getElementById('editUserForm');
@@ -5423,18 +4716,15 @@ function initDomBindings() {
             if (!isAdminUser(system?.currentUser)) {
                 return;
             }
-            system?.ui?.reauthAdminForAction?.('revogar todas as sessões (logout geral)')?.then((t) => {
-                if (!t) return;
-                fetch(`${getApiBase()}/api/auth/revoke-self`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Admin-Reauth': String(t),
-                        ...getAuthHeaders()
-                    }
-                }).finally(() => {
-                    window.dmfLogout?.();
-                });
+            if (!confirm('Revogar todas as sessões ativas e sair?')) return;
+            fetch(`${getApiBase()}/api/auth/revoke-self`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            }).finally(() => {
+                window.dmfLogout?.();
             });
         });
     }
@@ -5528,7 +4818,8 @@ function initDomBindings() {
     }
 
     const chatSendButton = document.getElementById('chatSendBtn');
-    if (chatSendButton) {
+    if (chatSendButton && !chatSendButton.dataset.boundAssistant) {
+        chatSendButton.dataset.boundAssistant = 'true';
         chatSendButton.addEventListener('click', function () {
             window.assistant?.sendMessage?.();
         });
@@ -5579,62 +4870,58 @@ function initDomBindings() {
         });
     }
 
+    const appWrapper = document.getElementById('appSection');
+    const mobileMenuButton = document.getElementById('mobileMenuButton');
+    const mobileSidebarOverlay = document.getElementById('mobileSidebarOverlay');
+
+    const closeMobileSidebar = () => {
+        if (!appWrapper) return;
+        appWrapper.classList.remove('mobile-sidebar-open');
+        if (mobileMenuButton) {
+            mobileMenuButton.setAttribute('aria-expanded', 'false');
+        }
+    };
+
+    const toggleMobileSidebar = () => {
+        if (!appWrapper) return;
+        const isOpen = appWrapper.classList.toggle('mobile-sidebar-open');
+        if (mobileMenuButton) {
+            mobileMenuButton.setAttribute('aria-expanded', String(isOpen));
+        }
+    };
+
+    if (mobileMenuButton && !mobileMenuButton.dataset.boundMobileMenu) {
+        mobileMenuButton.dataset.boundMobileMenu = 'true';
+        mobileMenuButton.addEventListener('click', toggleMobileSidebar);
+    }
+
+    if (mobileSidebarOverlay && !mobileSidebarOverlay.dataset.boundMobileOverlay) {
+        mobileSidebarOverlay.dataset.boundMobileOverlay = 'true';
+        mobileSidebarOverlay.addEventListener('click', closeMobileSidebar);
+    }
+
+    window.addEventListener('resize', () => {
+        if (window.innerWidth > 900) {
+            closeMobileSidebar();
+        }
+    });
+
     // Navigation event listeners
     document.querySelectorAll('[data-nav]').forEach(button => {
         button.addEventListener('click', function() {
-            triggerHaptic('tap');
             const viewId = this.getAttribute('data-nav');
             system.ui.navigate(viewId, this);
+            if (window.innerWidth <= 900) {
+                closeMobileSidebar();
+            }
         });
     });
-
-    // Mobile sidebar toggle (off-canvas)
-    (function initMobileSidebar() {
-        const sidebar = document.getElementById('sidebar');
-        const overlay = document.getElementById('sidebarOverlay');
-        const btn = document.getElementById('btnMobileMenu');
-        if (!sidebar || !overlay || !btn) return;
-
-        const close = () => {
-            sidebar.classList.remove('is-open');
-            overlay.classList.add('hidden');
-            overlay.setAttribute('aria-hidden', 'true');
-            btn.setAttribute('aria-expanded', 'false');
-        };
-
-        const open = () => {
-            sidebar.classList.add('is-open');
-            overlay.classList.remove('hidden');
-            overlay.setAttribute('aria-hidden', 'false');
-            btn.setAttribute('aria-expanded', 'true');
-        };
-
-        btn.addEventListener('click', () => {
-            if (sidebar.classList.contains('is-open')) close();
-            else open();
-        });
-        overlay.addEventListener('click', close);
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') close();
-        });
-
-        // Close on navigation tap (mobile)
-        document.querySelectorAll('.sidebar [data-nav]').forEach((navBtn) => {
-            navBtn.addEventListener('click', () => close());
-        });
-
-        // Ensure overlay is closed on wider screens
-        window.addEventListener('resize', () => {
-            if (window.innerWidth > 920) close();
-        });
-    })();
 
     const paymentsToggle = document.getElementById('btnPaymentsToggle');
     const paymentsSubmenu = document.getElementById('paymentsSubmenu');
     const paymentsToggleIcon = document.getElementById('paymentsToggleIcon');
     if (paymentsToggle && paymentsSubmenu && paymentsToggleIcon) {
         paymentsToggle.addEventListener('click', function() {
-            triggerHaptic('tap');
             paymentsSubmenu.classList.toggle('hidden');
             const isOpen = !paymentsSubmenu.classList.contains('hidden');
             paymentsToggle.classList.toggle('is-open', isOpen);
@@ -5664,17 +4951,36 @@ function initDomBindings() {
         });
     });
 
+    const openArchiveFlowConfirm = function () {
+        if (!isAdminUser(system?.currentUser)) {
+            alert('Acao permitida apenas para admin.');
+            return;
+        }
+        if (!system?.admin?.hasPermission?.(system?.currentUser, 'archive_flow')) {
+            alert('Voce nao tem permissao para arquivar fluxos.');
+            return;
+        }
+        system?.ui?.openModal?.('archiveFlowConfirmModal');
+    };
+
     const archiveFlowButton = document.getElementById('btnArchiveFlow');
-    if (archiveFlowButton) {
-        archiveFlowButton.addEventListener('click', function () {
-            if (!system?.admin?.hasPermission?.(system?.currentUser, 'archive_flow')) {
-                alert('Você não tem permissão para arquivar fluxos.');
-                return;
-            }
-            if (!confirm('Enviar todo o fluxo atual para Fluxos Anteriores? Isso irá limpar o fluxo atual.')) {
-                return;
-            }
-            system?.data?.archiveCurrentFlow?.().then((archive) => {
+    if (archiveFlowButton && !archiveFlowButton.dataset.boundArchiveModal) {
+        archiveFlowButton.dataset.boundArchiveModal = 'true';
+        archiveFlowButton.addEventListener('click', openArchiveFlowConfirm);
+    }
+
+    const archiveFlowBottomButton = document.getElementById('btnArchiveFlowBottom');
+    if (archiveFlowBottomButton && !archiveFlowBottomButton.dataset.boundArchiveModal) {
+        archiveFlowBottomButton.dataset.boundArchiveModal = 'true';
+        archiveFlowBottomButton.addEventListener('click', openArchiveFlowConfirm);
+    }
+
+    const confirmArchiveFlowButton = document.getElementById('btnConfirmArchiveFlow');
+    if (confirmArchiveFlowButton && !confirmArchiveFlowButton.dataset.boundArchiveConfirm) {
+        confirmArchiveFlowButton.dataset.boundArchiveConfirm = 'true';
+        confirmArchiveFlowButton.addEventListener('click', function () {
+            system?.ui?.closeModal?.('archiveFlowConfirmModal');
+            system?.data?.archiveCurrentFlow?.({ forceUnsigned: true }).then((archive) => {
                 if (!archive) return;
                 system?.ui?.renderPaymentsTable?.();
                 system?.ui?.updateStats?.();
@@ -5701,8 +5007,25 @@ function initDomBindings() {
     const flowArchiveDetail = document.getElementById('flowArchiveDetail');
     if (flowArchiveDetail) {
         flowArchiveDetail.addEventListener('click', function (event) {
+            const signButton = event.target.closest('[data-archive-sign]');
             const button = event.target.closest('[data-archive-delete]');
             const exportButton = event.target.closest('[data-archive-export]');
+            if (signButton) {
+                const archiveId = signButton.getAttribute('data-archive-sign');
+                const paymentId = signButton.getAttribute('data-payment-id');
+                if (!archiveId || !paymentId) return;
+                if (!system?.admin?.hasPermission?.(system?.currentUser, 'sign_payments')) {
+                    alert('Voce nao tem permissao para assinar.');
+                    return;
+                }
+                system?.data?.signArchivePayment?.(archiveId, paymentId, system?.data?.currentCompany).then((archiveUpdated) => {
+                    if (!archiveUpdated) return;
+                    system?.ui?.renderFlowArchivesList?.();
+                    system?.ui?.renderFlowArchiveDetail?.(archiveUpdated);
+                    system?.ui?.updateStats?.();
+                });
+                return;
+            }
             if (exportButton) {
                 const id = exportButton.getAttribute('data-archive-export');
                 const archive = (system?.data?.archives || []).find(a => a.id === id);
@@ -5822,17 +5145,12 @@ function initDomBindings() {
         });
     }
 
-        const saveBudgetsButton = document.getElementById('btnSaveBudgets');
+    const saveBudgetsButton = document.getElementById('btnSaveBudgets');
     if (saveBudgetsButton) {
-        saveBudgetsButton.addEventListener('click', async function () {
+        saveBudgetsButton.addEventListener('click', function () {
             const isAdmin = system?.admin?.hasPermission?.(system?.currentUser, 'admin_access');
             if (!isAdmin) {
-                alert('Somente admin pode salvar orcamentos.');
-                return;
-            }
-            const monthKey = system?.ui?.getSelectedReportMonth?.();
-            if (!monthKey) {
-                showToast('Selecione o mes do relatorio.', 'warn');
+                alert('Somente admin pode salvar orçamentos.');
                 return;
             }
             const budgets = {
@@ -5840,16 +5158,13 @@ function initDomBindings() {
                 JFX: Number(document.getElementById('budgetJFX')?.value || 0),
                 'Real Energy': Number(document.getElementById('budgetReal')?.value || 0)
             };
-            const ok = await system?.ui?.saveBudgetsToBackend?.(monthKey, budgets);
-            if (!ok) {
-                showToast('Falha ao salvar orcamentos no servidor.', 'warn');
-                return;
-            }
-            showToast('Orcamentos salvos.', 'success');
+            system?.ui?.saveBudgets?.(budgets);
             system?.ui?.renderMonthlyReports?.();
+            alert('Orçamentos salvos.');
         });
     }
-const signatureSearchButton = document.getElementById('signatureSearchButton');
+
+    const signatureSearchButton = document.getElementById('signatureSearchButton');
     if (signatureSearchButton) {
         signatureSearchButton.addEventListener('click', function () {
             system.audit.searchSignatureById();
@@ -5973,3 +5288,4 @@ function syncBrain(){
 // sincroniza a cada 2s sem travar
 setInterval(syncBrain,2000);
 // ==== FIM SINCRONIZAÇÃO ====
+

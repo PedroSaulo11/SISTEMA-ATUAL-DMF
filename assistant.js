@@ -5,13 +5,22 @@ class IntelligentAssistant {
         this.history = JSON.parse(localStorage.getItem('dmf_assistant_history')) || [];
         this.memoria = JSON.parse(localStorage.getItem('dmf_assistant_memoria')) || [];
         this.learningData = JSON.parse(localStorage.getItem('dmf_assistant_learning')) || {}; // ALTERADO
+        this.isSending = false;
+        this.quickPrompts = [
+            'Quantos pagamentos pendentes existem hoje?',
+            'Qual o total de gastos da Real Energy neste mes?',
+            'Quem assinou por ultimo?',
+            'Me explique como importar pagamentos'
+        ];
         this.init();
     }
 
     init() {
         this.renderHistory();
+        this.renderQuickPrompts();
         this.setupEventListeners();
         this.inicializarConhecimentoBase();
+        this.renderWelcomeIfNeeded();
     }
 
     inicializarConhecimentoBase() {
@@ -47,8 +56,35 @@ class IntelligentAssistant {
         if (input) {
             input.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
+                    e.preventDefault();
                     this.sendMessage();
                 }
+            });
+        }
+
+        const sendButton = document.getElementById('chatSendBtn');
+        if (sendButton && !sendButton.dataset.boundAssistant) {
+            sendButton.dataset.boundAssistant = 'true';
+            sendButton.addEventListener('click', () => this.sendMessage());
+        }
+
+        const clearButton = document.getElementById('chatClearBtn');
+        if (clearButton && !clearButton.dataset.boundAssistant) {
+            clearButton.dataset.boundAssistant = 'true';
+            clearButton.addEventListener('click', () => this.clearConversation());
+        }
+
+        const quickPromptsContainer = document.getElementById('chatQuickPrompts');
+        if (quickPromptsContainer && !quickPromptsContainer.dataset.boundAssistant) {
+            quickPromptsContainer.dataset.boundAssistant = 'true';
+            quickPromptsContainer.addEventListener('click', (event) => {
+                const target = event.target;
+                if (!(target instanceof HTMLElement)) return;
+                const button = target.closest('[data-quick-prompt]');
+                if (!button) return;
+                const prompt = button.getAttribute('data-quick-prompt');
+                if (!prompt) return;
+                this.sendMessage(prompt);
             });
         }
     }
@@ -71,6 +107,9 @@ class IntelligentAssistant {
     addLearning(key, value) { // ALTERADO
         if (!this.learningData[key]) this.learningData[key] = [];
         this.learningData[key].push(value);
+        if (this.learningData[key].length > 25) {
+            this.learningData[key] = this.learningData[key].slice(-25);
+        }
         localStorage.setItem('dmf_assistant_learning', JSON.stringify(this.learningData)); // ALTERADO
     }
 
@@ -181,18 +220,32 @@ class IntelligentAssistant {
         return "todos";
     }
 
-    sendMessage() {
+    async sendMessage(forcedMessage) {
         const input = document.getElementById('chatInput');
-        const message = input.value.trim();
+        if (!input && !forcedMessage) return;
+
+        const message = String(forcedMessage || input.value || '').trim();
         if (!message) return;
+        if (this.isSending) return;
 
+        this.isSending = true;
+        this.setSendingState(true);
         this.addMessage('user', message);
-        input.value = '';
+        if (!forcedMessage && input) input.value = '';
 
-        const response = this.processarPergunta(message);
-        setTimeout(() => {
+        const typingId = this.showTypingIndicator();
+        try {
+            const response = await Promise.resolve(this.processarPergunta(message));
+            this.hideTypingIndicator(typingId);
             this.addMessage('assistant', response);
-        }, 500);
+        } catch (error) {
+            this.hideTypingIndicator(typingId);
+            this.addMessage('assistant', 'Tive um erro ao processar sua pergunta. Tente novamente.');
+        } finally {
+            this.isSending = false;
+            this.setSendingState(false);
+            if (input) input.focus();
+        }
     }
 
     processarPergunta(question) {
@@ -806,12 +859,12 @@ class IntelligentAssistant {
             feedbackDiv.className = 'feedback-buttons';
             const positiveButton = document.createElement('button');
             positiveButton.className = 'feedback-btn positive';
-            positiveButton.textContent = '👍 Útil';
+            positiveButton.textContent = 'Util';
             positiveButton.addEventListener('click', () => this.giveFeedback('positive'));
 
             const negativeButton = document.createElement('button');
             negativeButton.className = 'feedback-btn negative';
-            negativeButton.textContent = '👎 Não útil';
+            negativeButton.textContent = 'Nao util';
             negativeButton.addEventListener('click', () => this.giveFeedback('negative'));
 
             feedbackDiv.appendChild(positiveButton);
@@ -824,6 +877,9 @@ class IntelligentAssistant {
     }
 
     renderHistory() {
+        const messagesContainer = document.getElementById('chatMessages');
+        if (!messagesContainer) return;
+        messagesContainer.innerHTML = '';
         this.history.forEach(msg => this.renderMessage(msg));
     }
 
@@ -836,11 +892,82 @@ class IntelligentAssistant {
             console.log('Resposta não útil - ajustando...');
         }
 
-        alert(`Obrigado pelo feedback! (${type === 'positive' ? 'Positivo' : 'Negativo'})`);
+        if (typeof window.showToast === 'function') {
+            window.showToast(`Feedback recebido: ${type === 'positive' ? 'positivo' : 'negativo'}.`, 'success');
+        } else {
+            console.log(`Feedback recebido: ${type}`);
+        }
     }
 
     saveHistory() {
         localStorage.setItem('dmf_assistant_history', JSON.stringify(this.history.slice(-50)));
+    }
+
+    renderQuickPrompts() {
+        const container = document.getElementById('chatQuickPrompts');
+        if (!container) return;
+        if (container.children.length > 0) return;
+
+        this.quickPrompts.forEach((prompt) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'chat-quick-btn';
+            button.setAttribute('data-quick-prompt', prompt);
+            button.textContent = prompt;
+            container.appendChild(button);
+        });
+    }
+
+    renderWelcomeIfNeeded() {
+        if (this.history.length > 0) return;
+        this.addMessage(
+            'assistant',
+            'Posso ajudar com pagamentos, assinaturas, auditoria e operacao do sistema. Use os atalhos acima ou digite sua pergunta.'
+        );
+    }
+
+    clearConversation() {
+        this.history = [];
+        this.saveHistory();
+        this.renderHistory();
+        this.renderWelcomeIfNeeded();
+        if (typeof window.showToast === 'function') {
+            window.showToast('Conversa limpa.', 'success');
+        }
+    }
+
+    setSendingState(isSending) {
+        const input = document.getElementById('chatInput');
+        const sendButton = document.getElementById('chatSendBtn');
+        if (input) input.disabled = !!isSending;
+        if (sendButton) {
+            sendButton.disabled = !!isSending;
+            sendButton.textContent = isSending ? 'Enviando...' : 'Enviar';
+        }
+    }
+
+    showTypingIndicator() {
+        const messagesContainer = document.getElementById('chatMessages');
+        if (!messagesContainer) return null;
+        const id = `typing-${Date.now()}`;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'chat-message assistant typing';
+        wrapper.setAttribute('data-typing-id', id);
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+        bubble.textContent = 'Assistente digitando...';
+        wrapper.appendChild(bubble);
+        messagesContainer.appendChild(wrapper);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        return id;
+    }
+
+    hideTypingIndicator(id) {
+        if (!id) return;
+        const node = document.querySelector(`[data-typing-id="${id}"]`);
+        if (node && node.parentNode) {
+            node.parentNode.removeChild(node);
+        }
     }
 }
 

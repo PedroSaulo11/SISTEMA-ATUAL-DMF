@@ -37,9 +37,10 @@ const {
   updateFlowPayment,
   getFlowPaymentById,
   signFlowPaymentIfUnsigned,
-  getMonthlyReport,
   listFlowArchives,
   createFlowArchive,
+  getFlowArchiveById,
+  updateFlowArchivePayments,
   deleteFlowArchive,
   replaceFlowArchives,
   listUserCompanies,
@@ -47,11 +48,6 @@ const {
   listCenterCompanies,
   upsertCenterCompany,
   bulkUpsertCenterCompanies,
-  listCostCenters,
-  upsertCostCenter,
-  bulkUpsertCostCenters,
-  listBudgetLimits,
-  upsertBudgetLimits,
   insertBackupSnapshot,
   listBackupSnapshots,
   insertLoginAudit,
@@ -472,12 +468,11 @@ const PUBLIC_FILES = new Set([
   'script.js',
   'assistant.js',
   'assistant.css',
+  'sw.js',
+  'manifest.webmanifest',
   'verify.html',
   'verify.js',
-  'verify.css',
-  'offline.html',
-  'manifest.webmanifest',
-  'sw.js'
+  'verify.css'
 ]);
 
 // Boot gating:
@@ -517,10 +512,8 @@ app.use((req, res, next) => {
 
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
-// Explicit favicon route (App Engine won't serve arbitrary root files unless we do).
 app.get('/favicon.ico', (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.sendFile(path.join(__dirname, 'favicon.ico'));
+  res.sendFile(path.join(__dirname, 'assets', 'logo-dmf.png'));
 });
 
 app.get('/', (req, res) => {
@@ -686,6 +679,15 @@ function computeChainHash({ prevHash, payment }) {
     String(payment?.centro ?? ''),
     payment?.assinatura?.dataISO || ''
   ].join('|');
+  return crypto.createHmac('sha256', SIGNATURE_SECRET).update(payload).digest('hex');
+}
+
+function buildSignatureHash({ paymentId, userName, dataISO, valor, centro }) {
+  if (!paymentId || !userName || !dataISO) return null;
+  const payload = `${paymentId}|${userName}|${dataISO}|${valor || ''}|${centro || ''}`;
+  if (!SIGNATURE_SECRET) {
+    return crypto.createHash('sha256').update(payload).digest('hex');
+  }
   return crypto.createHmac('sha256', SIGNATURE_SECRET).update(payload).digest('hex');
 }
 
@@ -1548,19 +1550,6 @@ app.post(
       });
     }
     const normalized = Array.from(dedup.values());
-
-    // Record identified cost centers in backend registry (best-effort).
-    try {
-      const centers = Array.from(new Set(
-        normalized.map(p => String(p.centro || '').trim()).filter(Boolean)
-      ));
-      if (centers.length) {
-        await bulkUpsertCostCenters(centers.map(c => ({ center_label: c, company })));
-      }
-    } catch (error) {
-      logger.warn('Failed to record cost centers from import', { error: error.message });
-    }
-
     await replaceFlowPayments(normalized, company);
     await recordAuditEvent(req, normalized.length ? 'FLOW_IMPORT' : 'FLOW_CLEAR', `Fluxo ${company} importado (${normalized.length} registros).`, {
       company,
@@ -1661,17 +1650,6 @@ app.post(
     await upsertFlowPayment(payment);
       saved = payment;
     }
-
-    // Record identified cost center in backend registry (best-effort).
-    try {
-      const label = String(payment.centro || '').trim();
-      if (label) {
-        await upsertCostCenter(label, company);
-      }
-    } catch (error) {
-      logger.warn('Failed to record cost center from upsert', { error: error.message });
-    }
-
     await recordAuditEvent(req, 'FLOW_UPSERT', `Pagamento ${payment.id} criado/atualizado em ${company}.`, {
       company,
       paymentId: payment.id
@@ -1704,7 +1682,9 @@ app.patch(
       return res.status(503).json({ error: 'Database not ready' });
     }
     const paymentId = req.params.id;
+    const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
     const incoming = req.body?.assinatura && typeof req.body.assinatura === 'object' ? req.body.assinatura : {};
+    const existingPayment = await getFlowPaymentById(paymentId, company);
     // Server is the source of truth for who/when signed (auditability across devices).
     const assinatura = {
       ...incoming,
@@ -1713,7 +1693,15 @@ app.patch(
       ip: req.ip,
       dataISO: new Date().toISOString()
     };
-    const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+    if (!assinatura.hash) {
+      assinatura.hash = buildSignatureHash({
+        paymentId,
+        userName: assinatura.usuarioNome,
+        dataISO: assinatura.dataISO,
+        valor: existingPayment?.valor ?? incoming?.valor ?? '',
+        centro: existingPayment?.centro ?? incoming?.centro ?? ''
+      });
+    }
     const updated = await signFlowPaymentIfUnsigned(paymentId, assinatura, company);
     if (!updated) {
       const existing = await getFlowPaymentById(paymentId, company);
@@ -1791,7 +1779,8 @@ app.post(
   enforceCompanyAccess,
   criticalLimiter,
   validateRequest([
-    body('company').optional().isString()
+    body('company').optional().isString(),
+    body('forceUnsigned').optional().isBoolean()
   ]),
   async (req, res) => {
   try {
@@ -1800,11 +1789,12 @@ app.post(
     }
     const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
     const payments = await listFlowPayments(company);
+    const forceUnsigned = req.body?.forceUnsigned === true;
     if (!payments.length) {
       return res.status(400).json({ error: 'Nenhum pagamento para arquivar.' });
     }
     const unsignedCount = payments.filter(p => !p.assinatura).length;
-    if (unsignedCount > 0) {
+    if (unsignedCount > 0 && !forceUnsigned) {
       return res.status(400).json({
         error: 'Existem pagamentos pendentes de assinatura.',
         pending: unsignedCount
@@ -1833,7 +1823,9 @@ app.post(
     await recordAuditEvent(req, 'FLOW_ARCHIVE_CREATE', `Fluxo arquivado (${company}).`, {
       company,
       count: withChain.length,
-      archiveId: archive?.id || null
+      archiveId: archive?.id || null,
+      pendingArchived: unsignedCount,
+      forced: forceUnsigned
     });
     await replaceFlowPayments([], company);
     emitEventWebhook('flow_archived', {
@@ -1875,6 +1867,114 @@ app.delete(
     res.status(500).json({ error: 'Failed to delete flow archive' });
   }
 });
+
+app.patch(
+  '/api/flow-archives/:archiveId/payments/:paymentId/sign',
+  authenticateToken,
+  authorizeRole('user'),
+  authorizePermission('sign_payments'),
+  validateRequest([
+    param('archiveId').notEmpty().withMessage('Archive id required'),
+    param('paymentId').notEmpty().withMessage('Payment id required')
+  ]),
+  async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    const archiveId = String(req.params.archiveId || '').trim();
+    const paymentId = String(req.params.paymentId || '').trim();
+    const archive = await getFlowArchiveById(archiveId);
+    if (!archive) {
+      return res.status(404).json({ error: 'Archive not found' });
+    }
+
+    const archiveCompany = normalizeCompany(archive.company || req.query.company || req.body?.company) || 'DMF';
+    if (ENFORCE_COMPANY_ACCESS && normalizeRole(req.user?.role) !== 'admin') {
+      const companies = await resolveCompanyAccess(req.user?.id, req.user?.role);
+      if ((!companies || companies.length === 0) && !ALLOW_ALL_COMPANIES_WHEN_UNSET) {
+        await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', 'Nenhuma empresa liberada para assinatura em fluxo arquivado.', {
+          company: archiveCompany,
+          archiveId,
+          paymentId
+        });
+        return res.status(403).json({ error: 'Company access not configured' });
+      }
+      if (companies && companies.length > 0 && !companies.includes(archiveCompany)) {
+        await recordAuditEvent(req, 'COMPANY_ACCESS_DENIED', `Acesso negado para assinar fluxo arquivado em ${archiveCompany}.`, {
+          company: archiveCompany,
+          archiveId,
+          paymentId
+        });
+        return res.status(403).json({ error: 'Company access denied' });
+      }
+    }
+
+    const payments = Array.isArray(archive.payments) ? archive.payments.slice() : [];
+    const index = payments.findIndex(p => String(p?.id || '') === paymentId);
+    if (index < 0) {
+      return res.status(404).json({ error: 'Payment not found in archive' });
+    }
+
+    if (payments[index]?.assinatura) {
+      return respondConflict(req, res, {
+        code: 'FLOW_SIGN_CONFLICT',
+        message: `Tentativa de assinar pagamento ja assinado em fluxo arquivado (${paymentId}).`,
+        payload: { payment: payments[index], archiveId },
+        metadata: {
+          company: archiveCompany,
+          paymentId,
+          archiveId,
+          alreadySigned: true
+        }
+      });
+    }
+
+    const incoming = req.body?.assinatura && typeof req.body.assinatura === 'object' ? req.body.assinatura : {};
+    const assinatura = {
+      ...incoming,
+      usuarioNome: req.user?.username || req.user?.email || incoming?.usuarioNome || 'usuario',
+      userId: req.user?.id || null,
+      ip: req.ip,
+      dataISO: new Date().toISOString()
+    };
+    if (!assinatura.hash) {
+      const currentPayment = payments[index] || {};
+      assinatura.hash = buildSignatureHash({
+        paymentId,
+        userName: assinatura.usuarioNome,
+        dataISO: assinatura.dataISO,
+        valor: currentPayment?.valor ?? incoming?.valor ?? '',
+        centro: currentPayment?.centro ?? incoming?.centro ?? ''
+      });
+    }
+    payments[index] = {
+      ...payments[index],
+      assinatura
+    };
+
+    const withChain = applyChainHashes(payments);
+    const updatedArchive = await updateFlowArchivePayments(archiveId, withChain);
+    const updatedPayment = withChain[index];
+    await recordAuditEvent(req, 'FLOW_ARCHIVE_SIGN', `Pagamento ${paymentId} assinado em fluxo arquivado ${archiveId}.`, {
+      company: archiveCompany,
+      paymentId,
+      archiveId
+    });
+    emitEventWebhook('payment_signed_archive', {
+      paymentId,
+      archiveId,
+      company: archiveCompany,
+      user: req.user?.username || null,
+      assinatura: updatedPayment?.assinatura || null
+    });
+    res.json({ success: true, archive: updatedArchive, payment: updatedPayment });
+  } catch (error) {
+    logger.error('Error signing archived flow payment', { error: error.message });
+    res.status(500).json({ error: 'Failed to sign archived flow payment' });
+  }
+  }
+);
 
 // Security: Protected route to sign a payment (requires gestor or admin)
 app.post('/api/payments/:id/sign', authenticateToken, authorizeRole('gestor'), authorizePermission('sign_payments'), [
@@ -2197,50 +2297,6 @@ app.post('/api/auth/refresh', async (req, res) => {
   }
 });
 
-// Admin re-authentication (password confirmation) for sensitive actions.
-app.post('/api/auth/reauth', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), [
-  body('password').isString().isLength({ min: 1 }).withMessage('Password required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-    if (!JWT_SECRET) {
-      return res.status(503).json({ success: false, error: 'Auth not ready' });
-    }
-
-    const userId = Number(req.user?.id);
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-
-    let user = users.find(u => Number(u.id) === userId);
-    if (isDbReady()) {
-      user = await getUserById(userId);
-    }
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-
-    const ok = await bcrypt.compare(String(req.body.password || ''), String(user.password_hash || ''));
-    if (!ok) {
-      return res.status(401).json({ success: false, error: 'Invalid password' });
-    }
-
-    const token = jwt.sign(
-      { sub: userId, type: 'reauth', role: String(req.user?.role || '') },
-      JWT_SECRET,
-      { expiresIn: '3m' }
-    );
-
-    return res.json({ success: true, token, expires_in_seconds: 180 });
-  } catch (error) {
-    logger.error('Reauth failed', { error: error.message });
-    return res.status(500).json({ success: false, error: 'Reauth failed' });
-  }
-});
-
 // Route to check authentication status
 app.get('/api/auth/status', (req, res) => {
   res.json({
@@ -2349,94 +2405,6 @@ app.get('/api/companies', authenticateToken, authorizeRole('user'), (req, res) =
   res.json({ companies: DEFAULT_COMPANIES_UNIQUE });
 });
 
-app.get('/api/reports/monthly', authenticateToken, authorizeRole('user'), async (req, res) => {
-  const monthKey = String(req.query.month || req.query.monthKey || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
-    return res.status(400).json({ error: 'Invalid month. Use YYYY-MM.' });
-  }
-
-  try {
-    // Always cap to the allow-list, even for admins.
-    let companies = DEFAULT_COMPANIES_UNIQUE;
-    if (ENFORCE_COMPANY_ACCESS && isDbReady() && normalizeRole(req.user?.role) !== 'admin') {
-      const resolved = await resolveCompanyAccess(req.user?.id, req.user?.role);
-      if (Array.isArray(resolved) && resolved.length) {
-        companies = resolved;
-      } else if (!ALLOW_ALL_COMPANIES_WHEN_UNSET) {
-        return res.status(403).json({ error: 'Company access not configured' });
-      }
-    }
-
-    companies = (companies || []).map(normalizeCompany).filter((c) => c && isAllowedCompany(c));
-    if (!companies.length) {
-      return res.status(403).json({ error: 'No companies allowed' });
-    }
-
-    const report = await getMonthlyReport({ monthKey, companies });
-    const budgetRows = await listBudgetLimits(monthKey, companies);
-    const budgets = (budgetRows || []).reduce((acc, row) => {
-      const company = normalizeCompany(row.company);
-      if (!company) return acc;
-      acc[company] = Number(row.limit_value || 0) || 0;
-      return acc;
-    }, {});
-
-    // Ensure stable keys for the known companies (even if 0).
-    DEFAULT_COMPANIES_UNIQUE.forEach((c) => {
-      if (!Object.prototype.hasOwnProperty.call(report.totals_by_company || {}, c)) {
-        report.totals_by_company[c] = 0;
-      }
-      if (!Object.prototype.hasOwnProperty.call(budgets, c)) {
-        budgets[c] = 0;
-      }
-    });
-
-    return res.json({
-      month: monthKey,
-      companies,
-      report,
-      budgets,
-    });
-  } catch (error) {
-    logger.error('Monthly report failed', { error: error.message });
-    return res.status(500).json({ error: 'Failed to generate report' });
-  }
-});
-
-app.put('/api/budgets', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), criticalLimiter, async (req, res) => {
-  const monthKey = String(req.query.month || req.body?.month || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
-    return res.status(400).json({ error: 'Invalid month. Use YYYY-MM.' });
-  }
-  const budgets = req.body?.budgets && typeof req.body.budgets === 'object' ? req.body.budgets : null;
-  if (!budgets) {
-    return res.status(400).json({ error: 'budgets object required' });
-  }
-
-  // Only allow writing the known allow-list companies.
-  const filtered = {};
-  for (const [k, v] of Object.entries(budgets)) {
-    const company = normalizeCompany(k);
-    if (!company || !isAllowedCompany(company)) continue;
-    const n = Number(v || 0);
-    if (!Number.isFinite(n) || n < 0) continue;
-    filtered[company] = n;
-  }
-
-  try {
-    const count = await upsertBudgetLimits(monthKey, filtered, req.user?.username || null);
-    await recordAuditEvent(req, 'BUDGETS_UPDATED', `Orcamentos atualizados para ${monthKey}.`, {
-      month: monthKey,
-      companies: Object.keys(filtered),
-      count
-    });
-    return res.json({ status: 'ok', updated: count });
-  } catch (error) {
-    logger.error('Failed to save budgets', { error: error.message });
-    return res.status(500).json({ error: 'Failed to save budgets' });
-  }
-});
-
 // Admin: list roles
 app.get('/api/roles', authenticateToken, authorizeRole('admin'), authorizePermission('roles_manage'), async (req, res) => {
   try {
@@ -2511,50 +2479,6 @@ app.get('/api/centers/companies', authenticateToken, authorizeRole('user'), asyn
   } catch (error) {
     logger.error('Error listing center companies', { error: error.message });
     res.status(500).json({ error: 'Failed to list center companies' });
-  }
-});
-
-// Cost centers registry: backend source-of-truth (avoid relying on localStorage).
-app.get('/api/cost-centers', authenticateToken, authorizeRole('user'), async (req, res) => {
-  try {
-    if (!isDbReady()) {
-      return res.status(503).json({ error: 'Database not ready' });
-    }
-    const search = req.query.search ? String(req.query.search).trim() : null;
-    const limit = Number(req.query.limit || 2000);
-    const items = await listCostCenters({ search, limit });
-    res.json({
-      items: (items || []).map(item => ({
-        center_key: item.center_key,
-        center_label: item.center_label,
-        first_seen_at: item.first_seen_at || null,
-        last_seen_at: item.last_seen_at || null,
-        last_seen_company: item.last_seen_company || null,
-      }))
-    });
-  } catch (error) {
-    logger.error('Error listing cost centers', { error: error.message });
-    res.status(500).json({ error: 'Failed to list cost centers' });
-  }
-});
-
-app.post('/api/cost-centers', authenticateToken, authorizeRole('user'), validateRequest([
-  body('center').notEmpty().withMessage('Center name required'),
-]), async (req, res) => {
-  try {
-    if (!isDbReady()) {
-      return res.status(503).json({ error: 'Database not ready' });
-    }
-    const centerLabel = String(req.body.center || '').trim();
-    const company = req.body.company ? normalizeCompany(req.body.company) : null;
-    if (centerLabel.length > 160) {
-      return res.status(400).json({ error: 'Center name too long' });
-    }
-    const item = await upsertCostCenter(centerLabel, company);
-    res.json({ success: true, item });
-  } catch (error) {
-    logger.error('Error upserting cost center', { error: error.message });
-    res.status(500).json({ error: 'Failed to upsert cost center' });
   }
 });
 
@@ -2675,28 +2599,8 @@ app.delete(
   }
 );
 
-function requireAdminReauth(req, res, next) {
-  try {
-    if (!JWT_SECRET) {
-      return res.status(503).json({ success: false, error: 'Auth not ready' });
-    }
-    const token = String(req.headers['x-admin-reauth'] || req.headers['x-reauth-token'] || '').trim();
-    if (!token) {
-      return res.status(401).json({ success: false, error: 'Reauth required' });
-    }
-    const payload = jwt.verify(token, JWT_SECRET);
-    const userId = Number(req.user?.id);
-    if (!payload || payload.type !== 'reauth' || Number(payload.sub) !== userId) {
-      return res.status(401).json({ success: false, error: 'Reauth required' });
-    }
-    return next();
-  } catch (_) {
-    return res.status(401).json({ success: false, error: 'Reauth required' });
-  }
-}
-
 // Admin: revoke all sessions for a user
-app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), requireAdminReauth, criticalLimiter, [
+app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {
@@ -2718,7 +2622,7 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), auth
 });
 
 // Self: revoke current sessions (logout everywhere)
-app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), requireAdminReauth, criticalLimiter, async (req, res) => {
+app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), criticalLimiter, async (req, res) => {
   try {
     await setUserSessionRevokedAfter(req.user?.id, new Date());
     await recordAuditEvent(req, 'SESSIONS_REVOKED_SELF', 'Sessões revogadas pelo próprio usuário.', {
@@ -2747,7 +2651,7 @@ app.get('/api/users', authenticateToken, authorizeRole('admin'), authorizePermis
 });
 
 // Admin: update user
-app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), requireAdminReauth, [
+app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), [
   param('id').isInt().withMessage('Valid user ID required'),
   body('username').optional().isLength({ min: 3, max: 50 }).trim().escape(),
   body('email').optional().isEmail().normalizeEmail(),
@@ -2829,7 +2733,7 @@ app.put('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePe
 });
 
 // Admin: delete user
-app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), requireAdminReauth, criticalLimiter, [
+app.delete('/api/users/:id', authenticateToken, authorizeRole('admin'), authorizePermission('user_manage'), criticalLimiter, [
   param('id').isInt().withMessage('Valid user ID required'),
 ], async (req, res) => {
   try {
