@@ -621,7 +621,10 @@ class DataProcessor {
             const params = new URLSearchParams();
             if (filters.start) params.set('start', filters.start);
             if (filters.end) params.set('end', filters.end);
-            params.set('company', this.currentCompany);
+            const allCompanies = filters.allCompanies === true;
+            if (!allCompanies) {
+                params.set('company', this.currentCompany);
+            }
             const response = await fetch(`${getApiBase()}/api/flow-archives${params.toString() ? `?${params}` : ''}`, {
                 cache: 'no-store',
                 headers: {
@@ -2291,7 +2294,7 @@ class UIManager {
         if (activeButton) activeButton.classList.add('active');
 
         if (tab === 'history') {
-            this.core.data.loadArchivesFromBackend().then(() => {
+            this.core.data.loadArchivesFromBackend({ allCompanies: true }).then(() => {
                 this.renderFlowArchivesList();
             });
         }
@@ -4996,7 +4999,7 @@ function initDomBindings() {
     const refreshArchivesButton = document.getElementById('btnRefreshArchives');
     if (refreshArchivesButton) {
         refreshArchivesButton.addEventListener('click', function () {
-            system?.data?.loadArchivesFromBackend?.().then(() => {
+            system?.data?.loadArchivesFromBackend?.({ allCompanies: true }).then(() => {
                 system?.ui?.renderFlowArchivesList?.();
             });
         });

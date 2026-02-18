@@ -1748,13 +1748,22 @@ app.patch(
 );
 
 // Archived flow snapshots
-app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), authorizePermission('view_archives'), requireCompanyParam, enforceCompanyAccess, async (req, res) => {
+app.get('/api/flow-archives', authenticateToken, authorizeRole('user'), authorizePermission('view_archives'), enforceCompanyAccess, async (req, res) => {
   try {
     if (!isDbReady()) {
       return res.status(503).json({ error: 'Database not ready' });
     }
-    const company = normalizeCompany(req.query.company);
-    const archives = await listFlowArchives(company);
+    const requestedCompany = normalizeCompany(req.query.company);
+    let archives = await listFlowArchives(requestedCompany || null);
+
+    if (!requestedCompany && ENFORCE_COMPANY_ACCESS && normalizeRole(req.user?.role) !== 'admin') {
+      const companies = await resolveCompanyAccess(req.user?.id, req.user?.role);
+      if (Array.isArray(companies) && companies.length > 0) {
+        const allowed = new Set(companies.map(c => normalizeCompany(c)).filter(Boolean));
+        archives = archives.filter(a => allowed.has(normalizeCompany(a?.company)));
+      }
+    }
+
     const start = req.query.start ? new Date(String(req.query.start)) : null;
     const end = req.query.end ? new Date(String(req.query.end)) : null;
     let filtered = archives;
