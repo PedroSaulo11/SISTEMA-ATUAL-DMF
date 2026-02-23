@@ -1552,6 +1552,41 @@ class UIManager {
         this.flowStreamReconnectMs = 2000;
         this.dashboardSyncTimer = null;
         this.pendingCenterCompanyUpdates = new Map();
+        this.signatureIdCollapsed = localStorage.getItem('dmf_signature_id_collapsed') !== 'false';
+    }
+
+    getSignatureIdToggleGlyph() {
+        return this.signatureIdCollapsed ? '▸' : '▾';
+    }
+
+    formatSignatureId(hash) {
+        if (!hash) return '-';
+        if (!this.signatureIdCollapsed) return String(hash);
+        const text = String(hash);
+        return text.length > 10 ? `${text.slice(0, 10)}...` : text;
+    }
+
+    syncSignatureIdToggleState() {
+        document.querySelectorAll('[data-signature-id-toggle]').forEach((btn) => {
+            btn.textContent = this.getSignatureIdToggleGlyph();
+            btn.setAttribute('aria-expanded', this.signatureIdCollapsed ? 'false' : 'true');
+            btn.setAttribute('title', this.signatureIdCollapsed ? 'Expandir ID da assinatura' : 'Recolher ID da assinatura');
+        });
+        document.querySelectorAll('.signature-id-cell').forEach((cell) => {
+            cell.classList.toggle('is-collapsed', this.signatureIdCollapsed);
+        });
+    }
+
+    toggleSignatureIdVisibility() {
+        this.signatureIdCollapsed = !this.signatureIdCollapsed;
+        localStorage.setItem('dmf_signature_id_collapsed', this.signatureIdCollapsed ? 'true' : 'false');
+        this.renderPaymentsTable();
+        if (this.selectedArchiveId) {
+            const selected = (this.core?.data?.archives || []).find((item) => item.id === this.selectedArchiveId) || null;
+            this.renderFlowArchiveDetail(selected);
+        } else {
+            this.syncSignatureIdToggleState();
+        }
     }
 
     navigate(viewId, activeButton = null) {
@@ -1610,6 +1645,7 @@ class UIManager {
     showLogin() {
         document.getElementById('appSection').classList.add('hidden');
         document.getElementById('loginSection').classList.remove('hidden');
+        setupLoginVisualEffects();
         // Ensure background timers/streams don't keep running after logout.
         this.stopFlowAutoRefresh();
         this.stopDashboardSummaryAutoRefresh();
@@ -1827,6 +1863,7 @@ class UIManager {
     }
 
     setupDashboard() {
+        teardownLoginVisualEffects();
         document.getElementById('loginSection').classList.add('hidden');
         document.getElementById('appSection').classList.remove('hidden');
         const role = normalizeRole(this.core.currentUser && (this.core.currentUser.cargo || this.core.currentUser.role));
@@ -3095,7 +3132,9 @@ class UIManager {
                 <td>${p.assinatura ? 'Assinado' : 'Pendente'}</td>
                 <td>${(!p.assinatura && canSignArchive) ? `<button class="btn btn-primary btn-compact" data-archive-sign="${archive.id}" data-payment-id="${p.id}">Assinar</button>` : (p.assinatura ? '-' : 'Sem permissao')}</td>
                 <td>${p.assinatura ? `Assinado por ${p.assinatura.usuarioNome}` : '-'}</td>
-                <td>${p.assinatura?.hash || '-'}</td>
+                <td class="signature-id-cell ${this.signatureIdCollapsed ? 'is-collapsed' : ''}">
+                    <span class="signature-id-text">${this.formatSignatureId(p.assinatura?.hash)}</span>
+                </td>
             </tr>
         `).join('');
 
@@ -3120,13 +3159,17 @@ class UIManager {
                             <th>Status</th>
                             <th>Ações</th>
                             <th>Assinatura</th>
-                            <th>ID da Assinatura</th>
+                            <th class="signature-id-col-header">
+                                ID da Assinatura
+                                <button type="button" class="signature-id-toggle" data-signature-id-toggle aria-label="Recolher ou expandir ID da assinatura">${this.getSignatureIdToggleGlyph()}</button>
+                            </th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
             </div>
         `;
+        this.syncSignatureIdToggleState();
     }
 
     async loadLoginAudits() {
@@ -3405,6 +3448,9 @@ class UIManager {
                             : '<span>—</span>'}
                         ${qrHtml}
                     </td>
+                    <td class="signature-id-cell ${this.signatureIdCollapsed ? 'is-collapsed' : ''}">
+                        <span class="signature-id-text">${this.formatSignatureId(p.assinatura?.hash)}</span>
+                    </td>
                     <td>${acoesHtml}</td> <!-- ALTERADO -->
                 </tr>
             `;
@@ -3414,6 +3460,7 @@ class UIManager {
         this.renderCompanyTotals && this.renderCompanyTotals();
         this.renderSignatureQrCodes && this.renderSignatureQrCodes();
         this.updateFlowStatusBadges && this.updateFlowStatusBadges();
+        this.syncSignatureIdToggleState();
 
         if (!body.dataset.boundPayments) {
             body.addEventListener('click', (event) => {
@@ -4655,6 +4702,14 @@ function registrarEvento(tipo, usuario, detalhes, entidade = null, recordId = nu
     console.log('DMF_BRAIN after registrarEvento:', window.DMF_BRAIN);
 }
 
+function setupLoginVisualEffects() {
+    return;
+}
+
+function teardownLoginVisualEffects() {
+    return;
+}
+
 // Event listeners for modal forms
 function initDomBindings() {
     const createUserForm = document.getElementById('createUserForm');
@@ -4703,6 +4758,7 @@ function initDomBindings() {
             system?.auth?.login?.();
         });
     }
+    setupLoginVisualEffects();
 
     const logoutButton = document.getElementById('btnLogout');
     if (logoutButton) {
@@ -5003,6 +5059,15 @@ function initDomBindings() {
                 system?.ui?.renderFlowArchivesList?.();
             });
         });
+    }
+
+    if (!document.body.dataset.boundSignatureIdToggle) {
+        document.body.addEventListener('click', function (event) {
+            const toggle = event.target.closest('[data-signature-id-toggle]');
+            if (!toggle) return;
+            system?.ui?.toggleSignatureIdVisibility?.();
+        });
+        document.body.dataset.boundSignatureIdToggle = 'true';
     }
 
     const flowArchiveDetail = document.getElementById('flowArchiveDetail');

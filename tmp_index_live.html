@@ -8,7 +8,7 @@
     <link rel="apple-touch-icon" href="/assets/logo-dmf.png">
     <link rel="manifest" href="/manifest.webmanifest?v=20260217-f14">
     <link rel="stylesheet" href="style.css?v=20260217-f14">
-    <link rel="stylesheet" href="login.css?v=20260221-f8">
+    <link rel="stylesheet" href="login.css?v=20260221-f5">
     <link rel="stylesheet" href="assistant.css?v=20260217-f14">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -22,12 +22,12 @@
     <div class="login-box">
         <h2 class="login-title">DMF Empreendimentos</h2>
         <p class="login-subtitle">Acesso seguro ao sistema financeiro empresarial.</p>
-        <div class="form-group">
-            <input type="text" id="loginInput" placeholder="Usuario ou Email" class="styled-input" autocomplete="username">
-            <input type="password" id="loginPass" placeholder="Senha" class="styled-input" autocomplete="current-password">
+        <div class="form-group login-form-group">
+            <input type="text" id="loginInput" placeholder="Usuario ou Email" class="styled-input login-field" autocomplete="username">
+            <input type="password" id="loginPass" placeholder="Senha" class="styled-input login-field" autocomplete="current-password">
         </div>
         <button id="btnLogin" class="btn btn-primary btn-full">Acessar Sistema</button>
-        <p class="login-subtitle">Acesso restrito a colaboradores autorizados.</p>
+        <p id="loginStatus" class="login-helper">Acesso restrito a colaboradores autorizados.</p>
     </div>
 </div>
 
@@ -46,7 +46,7 @@
             <h3>DMF FLUXO</h3>
             <p id="userRoleBadge" class="user-role-badge"></p>
             <div id="backendStatus" class="backend-status">Servidor: verificando...</div>
-            <div id="sessionStatus" class="backend-status">SessÃ£o: verificando...</div>
+            <div id="sessionStatus" class="backend-status">Sessão: verificando...</div>
             <div id="syncCountdown" class="backend-status">Sincronizando novamente em: --:--</div>
         </div>
         <nav class="sidebar-nav">
@@ -61,12 +61,12 @@
                 <button class="btn-side btn-sub" data-nav="payments" data-company="JFX">Fluxo de Pagamentos JFX</button>
             </div>
             <button class="btn-side" data-nav="audit">Logs de Auditoria</button>
-            <button id="adminMenu" class="btn-side hidden" data-nav="admin">AdministraÃ§Ã£o</button>
+            <button id="adminMenu" class="btn-side hidden" data-nav="admin">Administração</button>
             <button class="btn-side" data-nav="assistente">Assistente</button>
             <button class="btn-side" data-nav="cobli">Cobli</button>
         </nav>
         <button id="btnLogout" class="btn btn-logout">Sair</button>
-        <button id="btnRevokeSelf" class="btn btn-ghost hidden">Revogar SessÃµes</button>
+        <button id="btnRevokeSelf" class="btn btn-ghost hidden">Revogar Sessões</button>
     </aside>
     <div id="mobileSidebarOverlay" class="mobile-sidebar-overlay"></div>
 
@@ -92,14 +92,14 @@
 <div id="createUserModal" class="modal">
     <div class="modal-content">
         <span class="close" data-close-modal="createUserModal">&times;</span>
-        <h3>Criar Novo UsuÃ¡rio</h3>
+        <h3>Criar Novo Usuário</h3>
         <form id="createUserForm">
             <div class="form-group">
                 <label for="userName">Nome:</label>
                 <input type="text" id="userName" name="userName" required>
             </div>
             <div class="form-group">
-                <label for="userUsername">UsuÃ¡rio:</label>
+                <label for="userUsername">Usuário:</label>
                 <input type="text" id="userUsername" name="userUsername" required>
             </div>
             <div class="form-group">
@@ -118,7 +118,7 @@
                     <option value="gestor">Gestor</option>
                 </select>
             </div>
-            <button type="submit" class="btn btn-primary">Criar UsuÃ¡rio</button>
+            <button type="submit" class="btn btn-primary">Criar Usuário</button>
         </form>
     </div>
 </div>
@@ -134,89 +134,89 @@
                 <input type="text" id="roleName" name="roleName" required>
             </div>
             <div class="form-group">
-                <label>PermissÃµes:</label>
+                <label>Permissões:</label>
                 <div class="permissions">
                     <label>
-                        UsuÃ¡rio pode adicionar novos Pagamentos?
+                        Usuário pode adicionar novos Pagamentos?
                         <select id="rolePermAddPayments">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode assinar Fluxo de Pagamentos?
+                        Usuário pode assinar Fluxo de Pagamentos?
                         <select id="rolePermSignPayments">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio Pode Ver a aba AdministraÃ§Ã£o?
+                        Usuário Pode Ver a aba Administração?
                         <select id="rolePermViewAdmin">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Acessar a Aba Logs de Auditoria?
+                        Usuário pode Acessar a Aba Logs de Auditoria?
                         <select id="rolePermAccessAudit">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio Pode Importar Fluxo de Pagamentos?
+                        Usuário Pode Importar Fluxo de Pagamentos?
                         <select id="rolePermImportPayments">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio Pode Exportar Fluxo de Pagamentos?
+                        Usuário Pode Exportar Fluxo de Pagamentos?
                         <select id="rolePermExportPayments">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Ver Fluxos Anteriores?
+                        Usuário pode Ver Fluxos Anteriores?
                         <select id="rolePermViewArchives">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Enviar para Fluxos Anteriores?
+                        Usuário pode Enviar para Fluxos Anteriores?
                         <select id="rolePermArchiveFlow">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Excluir Fluxos Anteriores?
+                        Usuário pode Excluir Fluxos Anteriores?
                         <select id="rolePermDeleteArchive">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Exportar Fluxos Anteriores?
+                        Usuário pode Exportar Fluxos Anteriores?
                         <select id="rolePermExportArchive">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Comparar Fluxos Anteriores?
+                        Usuário pode Comparar Fluxos Anteriores?
                         <select id="rolePermCompareArchives">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
                     <label>
-                        UsuÃ¡rio pode Ver Logs de Acesso?
+                        Usuário pode Ver Logs de Acesso?
                         <select id="rolePermAuditLogin">
-                            <option value="no">NÃ£o</option>
+                            <option value="no">Não</option>
                             <option value="yes">Sim</option>
                         </select>
                     </label>
@@ -231,7 +231,7 @@
 <div id="editUserModal" class="modal">
     <div class="modal-content">
         <span class="close" data-close-modal="editUserModal">&times;</span>
-        <h3>Editar UsuÃ¡rio</h3>
+        <h3>Editar Usuário</h3>
         <form id="editUserForm">
             <input type="hidden" id="editUserId" name="editUserId">
             <div class="form-group">
@@ -239,7 +239,7 @@
                 <input type="text" id="editUserName" name="editUserName" required>
             </div>
             <div class="form-group">
-                <label for="editUserUsername">UsuÃ¡rio:</label>
+                <label for="editUserUsername">Usuário:</label>
                 <input type="text" id="editUserUsername" name="editUserUsername" required>
             </div>
             <div class="form-group">
@@ -253,7 +253,7 @@
                     <option value="gestor">Gestor</option>
                 </select>
             </div>
-            <button type="submit" class="btn btn-primary">Atualizar UsuÃ¡rio</button>
+            <button type="submit" class="btn btn-primary">Atualizar Usuário</button>
         </form>
     </div>
 </div>
@@ -294,7 +294,7 @@
         <input type="date" id="addData" name="data" required> <!-- ALTERADO -->
       </div>
       <div class="form-group">
-        <label for="addDescricao">DescriÃ§Ã£o:</label>
+        <label for="addDescricao">Descrição:</label>
         <input type="text" id="addDescricao" name="descricao"> <!-- ALTERADO -->
       </div>
       <div class="form-group">
@@ -324,7 +324,7 @@
     <span class="close" data-close-modal="centerAssignModal">&times;</span>
     <h3>Novo Centro de Custo Identificado</h3>
     <p>Encontramos um novo Centro de Custo:</p>
-    <div class="center-assign-highlight" id="centerAssignName">â€”</div>
+    <div class="center-assign-highlight" id="centerAssignName">—</div>
     <p>Selecione em qual empresa este centro deve ser encaixado e salve abaixo:</p>
     <div class="center-assign-actions">
       <select id="centerAssignCompany" class="styled-input">
@@ -341,7 +341,6 @@
   </div>
 </div>
 
-<script src="bootstrap.js?v=20260221-f8"></script>
+<script src="bootstrap.js?v=20260221-f5"></script>
 </body>
 </html>
-

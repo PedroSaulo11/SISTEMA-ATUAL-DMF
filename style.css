@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap');
 
 :root {
     --primary: #0052cc;
@@ -301,15 +301,6 @@ body { background: var(--bg-app); color: var(--text-primary); overflow-x: hidden
     transform: translateY(-2px) scale(1.05);
 }
 
-.login-screen .btn-primary {
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.login-screen .btn-primary:hover {
-    background: var(--primary-dark);
-    transform: translateY(-2px) scale(1.05);
-}
-
 .btn-ghost {
     background: rgba(113, 128, 150, 0.1);
     color: var(--text-secondary);
@@ -421,94 +412,51 @@ tr:hover { background: #f8fbff; }
     color: #5b6b7b;
 }
 
+.signature-id-col-header {
+    white-space: nowrap;
+}
+
+.signature-id-toggle {
+    margin-left: 6px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: inherit;
+    border-radius: 6px;
+    min-height: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.signature-id-toggle:hover {
+    background: rgba(113, 128, 150, 0.14);
+}
+
+.signature-id-cell {
+    max-width: 260px;
+    white-space: nowrap;
+}
+
+.signature-id-text {
+    display: inline-block;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+
+.signature-id-cell.is-collapsed {
+    max-width: 120px;
+}
+
+.signature-id-cell.is-collapsed .signature-id-text {
+    max-width: 100px;
+}
+
 /* --- Badges de Status --- */
 .badge { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .badge-pending { background: #fffbeb; color: #92400e; }
 .badge-signed { background: #ecfdf5; color: #065f46; }
-
-/* --- Login Screen --- */
-.login-screen {
-    height: 100vh;
-    width: 100vw;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 50%, var(--primary-dark) 100%);
-    background-size: 200% 200%;
-    position: relative;
-    opacity: 0;
-    animation-name: loginScreenFade, loginGradientMove;
-    animation-duration: 0.7s, 12s;
-    animation-timing-function: ease-out, ease-in-out;
-    animation-iteration-count: 1, infinite;
-    animation-fill-mode: forwards, none;
-}
-
-.login-screen::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grain" width="100" height="100" patternUnits="userSpaceOnUse"><circle cx="25" cy="25" r="1" fill="rgba(255,255,255,0.1)"/><circle cx="75" cy="75" r="1" fill="rgba(255,255,255,0.1)"/><circle cx="50" cy="10" r="0.5" fill="rgba(255,255,255,0.1)"/></pattern></defs><rect width="100" height="100" fill="url(%23grain)"/></svg>');
-    opacity: 0.1;
-}
-
-.login-screen::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background:
-        radial-gradient(120% 80% at 10% 15%, rgba(76, 154, 255, 0.35) 0%, rgba(76, 154, 255, 0) 60%),
-        radial-gradient(120% 80% at 90% 20%, rgba(0, 82, 204, 0.32) 0%, rgba(0, 82, 204, 0) 60%),
-        radial-gradient(120% 80% at 50% 85%, rgba(0, 212, 170, 0.25) 0%, rgba(0, 212, 170, 0) 60%);
-    opacity: 0.9;
-    animation-name: loginWavesMove;
-    animation-duration: 10s;
-    animation-timing-function: ease-in-out;
-    animation-iteration-count: infinite;
-    pointer-events: none;
-}
-
-.login-box {
-    background: var(--bg-card);
-    padding: 48px;
-    border-radius: var(--border-radius-large);
-    width: 420px;
-    box-shadow: 0 32px 64px rgba(0, 0, 0, 0.2), 0 16px 32px rgba(0, 0, 0, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    position: relative;
-    z-index: 1;
-    opacity: 0;
-    transform: translateY(24px);
-    animation-name: loginPanelUp;
-    animation-duration: 0.7s;
-    animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-    animation-delay: 0.15s;
-    animation-fill-mode: forwards;
-}
-
-.login-box h2 {
-    text-align: center;
-    margin-bottom: 32px;
-    font-size: 24px;
-    font-weight: 600;
-    color: var(--text-primary);
-    opacity: 0;
-    transform: translateY(10px);
-    animation-name: loginTitleUp;
-    animation-duration: 0.6s;
-    animation-timing-function: ease-out;
-    animation-delay: 0.35s;
-    animation-fill-mode: forwards;
-}
-
-.login-title {
-    margin-bottom: 20px;
-    color: var(--primary);
-}
 
 .form-group {
     margin-bottom: 24px;
@@ -525,19 +473,7 @@ tr:hover { background: #f8fbff; }
     background: var(--bg-card);
     transition: var(--transition);
     margin-bottom: 16px;
-    opacity: 0;
-    transform: translateY(8px);
-    animation-name: loginInputFade;
-    animation-duration: 0.5s;
-    animation-timing-function: ease-out;
-    animation-delay: 0.45s;
-    animation-fill-mode: forwards;
 }
-
-.styled-input:nth-of-type(2) {
-    animation-delay: 0.55s;
-}
-
 .styled-input:focus {
     outline: none;
     border-color: var(--primary);
@@ -547,21 +483,6 @@ tr:hover { background: #f8fbff; }
 .styled-input::placeholder {
     color: var(--text-secondary);
 }
-
-.login-box p {
-    text-align: center;
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 24px;
-    line-height: 1.5;
-}
-
-.login-subtitle {
-    font-size: 11px;
-    color: #64748b;
-    margin-top: 15px;
-}
-
 .btn-full {
     width: 100%;
 }
@@ -919,47 +840,6 @@ tr:hover { background: #f8fbff; }
 }
 
 .hidden { display: none !important; }
-
-@keyframes loginScreenFade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-@keyframes loginGradientMove {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-}
-
-@keyframes loginWavesMove {
-    0% {
-        background-position: 0% 0%, 100% 0%, 50% 100%;
-        transform: translateY(0);
-    }
-    50% {
-        background-position: 20% 10%, 80% 15%, 50% 90%;
-        transform: translateY(-8px);
-    }
-    100% {
-        background-position: 0% 0%, 100% 0%, 50% 100%;
-        transform: translateY(0);
-    }
-}
-
-@keyframes loginPanelUp {
-    from { opacity: 0; transform: translateY(24px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes loginTitleUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes loginInputFade {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-}
 
 @keyframes addPaymentSlideUp {
     from { opacity: 0; transform: translateY(24px); }
@@ -1990,3 +1870,5 @@ th {
         padding-bottom: calc(16px + env(safe-area-inset-bottom));
     }
 }
+
+

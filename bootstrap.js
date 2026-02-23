@@ -2,8 +2,8 @@
    Must be external JS because CSP in production blocks inline scripts. */
 (async function loadAppWithFragments() {
     try {
-        const ASSET_VERSION = '20260217-f14';
-        const sections = document.querySelectorAll('section[data-fragment]');
+        const ASSET_VERSION = '20260221-f8';
+        const sections = document.querySelectorAll('[data-fragment]');
 
         for (const section of sections) {
             const file = section.getAttribute('data-fragment');
@@ -31,6 +31,21 @@
         document.body.appendChild(assistant);
     } catch (error) {
         console.error('Erro ao carregar a interface:', error);
+        const login = document.getElementById('loginSection');
+        if (login && !login.innerHTML.trim()) {
+            login.innerHTML = `
+                <div class="login-box">
+                    <h2 class="login-title">DMF Empreendimentos</h2>
+                    <p class="login-subtitle">Acesso seguro ao sistema financeiro empresarial.</p>
+                    <div class="form-group">
+                        <input type="text" id="loginInput" placeholder="Usuario ou Email" class="styled-input" autocomplete="username">
+                        <input type="password" id="loginPass" placeholder="Senha" class="styled-input" autocomplete="current-password">
+                    </div>
+                    <button id="btnLogin" class="btn btn-primary btn-full">Acessar Sistema</button>
+                    <p class="login-subtitle">Falha ao carregar a interface completa. Tente recarregar.</p>
+                </div>
+            `;
+        }
         const app = document.getElementById('appSection');
         if (app) {
             app.insertAdjacentHTML(
@@ -40,3 +55,4 @@
         }
     }
 })();
+

@@ -457,6 +457,7 @@ const PUBLIC_FILES = new Set([
   'admin.html',
   'assistente.html',
   'cobli.html',
+  'login.fragment.html',
   'dashboard.fragment.html',
   'payments.fragment.html',
   'audit.fragment.html',
@@ -464,6 +465,7 @@ const PUBLIC_FILES = new Set([
   'assistente.fragment.html',
   'cobli.fragment.html',
   'style.css',
+  'login.css',
   'bootstrap.js',
   'script.js',
   'assistant.js',
@@ -517,10 +519,16 @@ app.get('/favicon.ico', (req, res) => {
 });
 
 app.get('/', (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.get('/verify', (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.sendFile(path.join(__dirname, 'verify.html'));
 });
 
@@ -528,6 +536,11 @@ app.get('/:file', (req, res) => {
   const file = req.params.file;
   if (!PUBLIC_FILES.has(file)) {
     return res.status(404).end();
+  }
+  if (file.endsWith('.html')) {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
   }
   res.sendFile(path.join(__dirname, file));
 });
