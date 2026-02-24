@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -37,3 +37,9 @@ jobs:
 
       - name: Smoke health
         run: npm run smoke:health
+
+      - name: Optional production audit fallback check
+        if: ${{ secrets.BASE_URL != '' }}
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: npm run check:audit-fallback:prod

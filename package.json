@@ -11,11 +11,16 @@
     "check:syntax": "node --check server.js && node --check script.js && node --check bootstrap.js",
     "check:security": "node scripts/security-check.js",
     "check:readiness": "node scripts/readiness-check.js",
+    "check:audit-fallback:prod": "node scripts/check-audit-fallback-prod.js",
+    "check:audit-fallback:prod:optional": "node -e \"if(!String(process.env.BASE_URL||'').trim()){console.log('[audit-fallback] SKIP BASE_URL not set');process.exit(0)};const{spawnSync}=require('child_process');const cmd=process.platform==='win32'?'npm.cmd':'npm';const r=spawnSync(cmd,['run','check:audit-fallback:prod'],{stdio:'inherit',env:process.env});process.exit(r.status==null?1:r.status);\"",
+    "db:grant:audit": "node scripts/fix-db-audit-permissions.js",
     "smoke:health": "node scripts/smoke-health.js",
     "smoke:multiuser": "node scripts/smoke-multiuser.js",
     "smoke:prod": "node scripts/smoke-prod.js",
+    "load:prod:multiuser": "node scripts/load-prod-multiuser.js",
+    "go-live:check": "node scripts/go-live-check.js",
     "check:baseline": "npm run check:syntax && npm run check:readiness && npm run smoke:health",
-    "check:phase3": "npm run check:syntax && npm run check:security && npm run check:readiness && npm run smoke:health"
+    "check:phase3": "npm run check:syntax && npm run check:security && npm run check:readiness && npm run smoke:health && npm run check:audit-fallback:prod:optional"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^6.1.1",

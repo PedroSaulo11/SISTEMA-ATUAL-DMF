@@ -105,7 +105,73 @@ Para validar também existência dos segredos no GCP:
 VERIFY_GCLOUD_SECRETS=true npm run check:readiness
 ```
 
-## 8) Rollout por feature flags (Etapa 2)
+## 8) Go-live multiusuário (automação completa)
+
+Checklist automatizado (local + produção):
+```bash
+npm run go-live:check
+```
+
+Comportamento:
+- Sempre roda `check:phase3`.
+- Se `BASE_URL` estiver definido, roda `smoke:prod` e `check:audit-fallback:prod`.
+- Se `BASE_URL` e `ACCESS_TOKEN` estiverem definidos, roda carga concorrente (`load:prod:multiuser`).
+
+Variáveis úteis:
+- `BASE_URL=https://<app>.rj.r.appspot.com`
+- `ACCESS_TOKEN=<jwt_admin_valido>`
+- `TEST_COMPANY=Real Energy`
+- `LOAD_WORKERS=8`
+- `LOAD_ROUNDS=20`
+- `LOAD_PAUSE_MS=100`
+
+## 9) Teste de carga concorrente
+
+```bash
+BASE_URL=... ACCESS_TOKEN=... npm run load:prod:multiuser
+```
+
+Valida em loop:
+- criação de pagamento
+- assinatura concorrente (esperado `200/409`)
+- limpeza do item de teste
+- latência p50/p95/max
+
+## 10) Permissões de auditoria no banco (correção definitiva)
+
+Aplicar grants com usuário admin do PostgreSQL:
+```bash
+DB_ADMIN_URL=postgres://... DB_APP_ROLE=dmf_app npm run db:grant:audit
+```
+
+Arquivo SQL de referência:
+- `db/migration_2026_02_24_audit_sequence_grants.sql`
+
+## 11) Segredos e acessos no Secret Manager
+
+Setup de segredos e IAM:
+```powershell
+.\scripts\secret-manager-setup.ps1 -ProjectId "project-b2fcff48-a0ca-4867-995"
+```
+
+Para também publicar versões com valores vindos do ambiente local:
+```powershell
+.\scripts\secret-manager-setup.ps1 -ProjectId "project-b2fcff48-a0ca-4867-995" -PopulateFromEnv
+```
+
+## 12) Monitoramento e alertas (Cloud Monitoring)
+
+Provisionar log-metrics + alert policies:
+```powershell
+.\scripts\setup-monitoring-alerts.ps1 -ProjectId "project-b2fcff48-a0ca-4867-995" -ServiceName "default"
+```
+
+Opcional: adicionar canal de notificação:
+```powershell
+.\scripts\setup-monitoring-alerts.ps1 -ProjectId "project-b2fcff48-a0ca-4867-995" -ServiceName "default" -NotificationChannel "projects/<id>/notificationChannels/<channel_id>"
+```
+
+## 13) Rollout por feature flags (Etapa 2)
 
 As flags abaixo existem para habilitar blocos de multiusuário de forma gradual, sem remover o fluxo atual:
 - `ENABLE_REDIS_CACHE`

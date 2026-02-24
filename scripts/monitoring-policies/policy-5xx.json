@@ -1,0 +1,25 @@
+﻿{
+  "displayName": "DMF AppEngine 5xx Spike",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "5xx > 10 em 5m",
+      "conditionThreshold": {
+        "filter": "resource.type=\"gae_app\" AND resource.label.\"module_id\"=\"default\" AND metric.type=\"logging.googleapis.com/user/dmf_http_5xx_alert_count\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 10,
+        "duration": "300s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "1800s" },
+  "notificationChannels": [],
+  "enabled": true
+}

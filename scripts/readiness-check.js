@@ -94,6 +94,16 @@ function checkAppYamlStrategy() {
   if (distFlags.some(Boolean) && !redisSecretMapped) {
     warn('Flags distribuidas estao ativas, mas SECRET_REDIS_URL nao esta mapeado no app.yaml.');
   }
+
+  const runtimeMatch = appYaml.match(/^\s*runtime:\s*([^\s]+)\s*$/m);
+  const runtime = runtimeMatch ? String(runtimeMatch[1] || '').trim() : '';
+  if (!runtime) {
+    warn('runtime nao encontrado no app.yaml.');
+  } else if (runtime.toLowerCase() === 'nodejs20') {
+    fail('runtime nodejs20 em fim de suporte. Atualize para nodejs22 ou superior.');
+  } else {
+    ok(`Runtime atual no app.yaml: ${runtime}`);
+  }
 }
 
 function checkSecretsWithGcloud() {
@@ -124,11 +134,22 @@ function checkSecretsWithGcloud() {
     findYamlValue(appYaml, 'SECRET_EVENT_WEBHOOK_SECRET')
   ].filter(Boolean);
 
-  for (const secretName of mappedNames) {
-    const result = spawnSync('gcloud', ['secrets', 'describe', secretName, `--project=${projectId}`], {
+  function gcloudDescribe(secretName) {
+    if (process.platform === 'win32') {
+      const cmd = `gcloud secrets describe ${secretName} --project=${projectId}`;
+      return spawnSync('cmd.exe', ['/d', '/s', '/c', cmd], {
+        cwd: root,
+        encoding: 'utf8'
+      });
+    }
+    return spawnSync('gcloud', ['secrets', 'describe', secretName, `--project=${projectId}`], {
       cwd: root,
       encoding: 'utf8'
     });
+  }
+
+  for (const secretName of mappedNames) {
+    const result = gcloudDescribe(secretName);
     if (result.status !== 0) {
       fail(`Secret nao encontrado ou sem acesso: ${secretName}`);
     } else {

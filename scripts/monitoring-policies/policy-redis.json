@@ -1,0 +1,25 @@
+﻿{
+  "displayName": "DMF Redis Runtime Warning",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Redis indisponivel > 0 em 5m",
+      "conditionThreshold": {
+        "filter": "resource.type=\"gae_app\" AND resource.label.\"module_id\"=\"default\" AND metric.type=\"logging.googleapis.com/user/dmf_redis_unavailable_count\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "300s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "1800s" },
+  "notificationChannels": [],
+  "enabled": true
+}

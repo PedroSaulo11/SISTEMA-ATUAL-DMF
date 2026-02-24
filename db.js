@@ -428,16 +428,84 @@ async function listLoginAudits(limit = 200) {
 }
 
 async function insertAuditEvent({ action, details, username, userId, ip, userAgent, metadata }) {
-  const Audit = AuditEventModel();
-  await Audit.create({
-    action,
-    details: details || null,
-    username: username || null,
-    user_id: userId || null,
-    ip: ip || null,
-    user_agent: userAgent || null,
-    metadata: metadata || null,
+  const db = getSequelize();
+  const normalizedAction = String(action || '').trim();
+  if (!normalizedAction) return;
+  let metadataJson = null;
+  if (metadata && typeof metadata === 'object') {
+    try {
+      metadataJson = JSON.stringify(metadata);
+    } catch (_) {
+      metadataJson = null;
+    }
+  }
+  const normalizedUserId = Number.isFinite(Number(userId)) ? Number(userId) : null;
+  const payload = {
+    action: normalizedAction.slice(0, 120),
+    details: details == null ? null : String(details).slice(0, 2000),
+    username: username == null ? null : String(username).slice(0, 255),
+    user_id: normalizedUserId,
+    ip: ip == null ? null : String(ip).slice(0, 255),
+    user_agent: userAgent == null ? null : String(userAgent).slice(0, 1024),
+    metadata: metadataJson,
     created_at: new Date()
+  };
+  try {
+    await db.query(
+      `
+        INSERT INTO audit_events
+          (action, details, username, user_id, ip, user_agent, metadata, created_at)
+        VALUES
+          (:action, :details, :username, :user_id, :ip, :user_agent, CAST(:metadata AS jsonb), :created_at)
+      `,
+      {
+        replacements: {
+          action: payload.action,
+          details: payload.details,
+          username: payload.username,
+          user_id: payload.user_id,
+          ip: payload.ip,
+          user_agent: payload.user_agent,
+          metadata: payload.metadata,
+          created_at: payload.created_at
+        }
+      }
+    );
+    return;
+  } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    // Some managed DB setups grant table INSERT but not sequence usage.
+    // Fallback to explicit id allocation under table lock to preserve audit writes.
+    if (!message.includes('permission denied for sequence audit_events_id_seq')) {
+      throw error;
+    }
+  }
+
+  await db.transaction(async (transaction) => {
+    await db.query('LOCK TABLE audit_events IN EXCLUSIVE MODE', { transaction });
+    await db.query(
+      `
+        INSERT INTO audit_events
+          (id, action, details, username, user_id, ip, user_agent, metadata, created_at)
+        SELECT
+          COALESCE(MAX(id), 0) + 1,
+          :action, :details, :username, :user_id, :ip, :user_agent, CAST(:metadata AS jsonb), :created_at
+        FROM audit_events
+      `,
+      {
+        transaction,
+        replacements: {
+          action: payload.action,
+          details: payload.details,
+          username: payload.username,
+          user_id: payload.user_id,
+          ip: payload.ip,
+          user_agent: payload.user_agent,
+          metadata: payload.metadata,
+          created_at: payload.created_at
+        }
+      }
+    );
   });
 }
 
@@ -725,6 +793,23 @@ async function getFlowPaymentById(id, company = null) {
   return row ? row.toJSON() : null;
 }
 
+async function deleteFlowPayment(id, company = null) {
+  const Flow = FlowPaymentModel();
+  let where = { id };
+  if (company) {
+    if (company === 'DMF') {
+      where = { id, [Op.or]: [{ company }, { company: null }] };
+    } else {
+      where = { id, company };
+    }
+  }
+  const row = await Flow.findOne({ where });
+  if (!row) return null;
+  const data = row.toJSON();
+  await Flow.destroy({ where });
+  return data;
+}
+
 async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id, assinatura: { [Op.is]: null } };
@@ -922,6 +1007,7 @@ module.exports = {
   updateFlowPaymentWithVersion,
   updateFlowPayment,
   getFlowPaymentById,
+  deleteFlowPayment,
   signFlowPaymentIfUnsigned,
   listFlowArchives,
   createFlowArchive,

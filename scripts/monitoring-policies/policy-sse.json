@@ -1,0 +1,25 @@
+﻿{
+  "displayName": "DMF SSE PubSub Init Failure",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Falha init SSE PubSub > 0 em 5m",
+      "conditionThreshold": {
+        "filter": "resource.type=\"gae_app\" AND resource.label.\"module_id\"=\"default\" AND metric.type=\"logging.googleapis.com/user/dmf_sse_pubsub_init_fail_count\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "300s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "1800s" },
+  "notificationChannels": [],
+  "enabled": true
+}

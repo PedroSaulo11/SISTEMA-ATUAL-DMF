@@ -36,6 +36,7 @@ const {
   updateFlowPaymentWithVersion,
   updateFlowPayment,
   getFlowPaymentById,
+  deleteFlowPayment,
   signFlowPaymentIfUnsigned,
   listFlowArchives,
   createFlowArchive,
@@ -407,7 +408,10 @@ async function recordAuditEvent(req, action, details, metadata = null) {
       metadata: metadata && typeof metadata === 'object' ? metadata : null
     });
   } catch (error) {
-    logger.warn('Failed to record audit event', { action, error: error.message });
+    logger.info('Audit event write skipped', {
+      action,
+      error: error?.message || 'unknown_error'
+    });
   }
 }
 
@@ -2226,6 +2230,43 @@ app.patch(
     logger.error('Error signing flow payment', { error: error.message });
     res.status(500).json({ error: 'Failed to sign flow payment' });
   }
+  }
+);
+
+app.delete(
+  '/api/flow-payments/:id',
+  authenticateToken,
+  authorizeRole('admin'),
+  authorizePermission('delete_payments'),
+  enforceCompanyAccess,
+  validateRequest([
+    param('id').notEmpty().withMessage('Payment id required')
+  ]),
+  async (req, res) => {
+    try {
+      if (!isDbReady()) {
+        return res.status(503).json({ error: 'Database not ready' });
+      }
+      const paymentId = req.params.id;
+      const company = normalizeCompany(req.query.company || req.body?.company) || 'DMF';
+      const deleted = await deleteFlowPayment(paymentId, company);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Payment not found' });
+      }
+      notifyFlowSubscribers(company, {
+        type: 'payment_deleted',
+        paymentId,
+        company
+      });
+      await recordAuditEvent(req, 'FLOW_DELETE', `Pagamento ${paymentId} excluido em ${company}.`, {
+        company,
+        paymentId
+      });
+      return res.json({ success: true, paymentId, company });
+    } catch (error) {
+      logger.error('Error deleting flow payment', { error: error.message });
+      return res.status(500).json({ error: 'Failed to delete flow payment' });
+    }
   }
 );
 
