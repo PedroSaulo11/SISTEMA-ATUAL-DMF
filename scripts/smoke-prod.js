@@ -86,6 +86,23 @@ async function httpJsonWithRetry(url, init = {}, { retries = 3, retryDelayMs = 1
   throw last || new Error(`Request failed after retries: ${url}`);
 }
 
+async function waitForDbReady(base, { retries = 8, retryDelayMs = 2000 } = {}) {
+  let last = null;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    const out = await httpJson(`${base}/api/health`);
+    last = out;
+    if (out.res.ok && out.json && out.json.status === 'ok' && out.json.db_ready === true) {
+      return out;
+    }
+    if (attempt < retries) {
+      const dbReady = out.json && Object.prototype.hasOwnProperty.call(out.json, 'db_ready') ? out.json.db_ready : null;
+      console.warn(`[smoke] waiting db_ready=true attempt ${attempt}/${retries} (status=${out.res.status} db_ready=${dbReady})`);
+      await sleep(retryDelayMs);
+    }
+  }
+  return last;
+}
+
 async function readSseOnce(url, timeoutMs = 7000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs).unref?.();
@@ -152,13 +169,20 @@ async function main() {
   // Health should always work
   let healthJson = null;
   {
-    const { res, json, text } = await httpJsonWithRetry(`${base}/api/health`, {}, {
+    const warmup = await waitForDbReady(base, {
+      retries: Number(mustEnv('SMOKE_DB_READY_RETRIES', '8')) || 8,
+      retryDelayMs: Number(mustEnv('SMOKE_DB_READY_RETRY_DELAY_MS', '2000')) || 2000
+    });
+    const { res, json, text } = warmup.res.ok && warmup.json && warmup.json.db_ready === true
+      ? warmup
+      : await httpJsonWithRetry(`${base}/api/health`, {}, {
       retries: Number(mustEnv('SMOKE_RETRIES', '4')) || 4,
       retryDelayMs: Number(mustEnv('SMOKE_RETRY_DELAY_MS', '1500')) || 1500,
       shouldRetry: (out) => out.res.status >= 500
     });
     assert(res.ok, `GET /api/health failed: HTTP ${res.status} body=${text.slice(0, 300)}`);
     assert(json && json.status === 'ok', 'health JSON missing status=ok');
+    assert(json.db_ready === true, `health db_ready expected true, got ${json.db_ready}`);
     healthJson = json;
     console.log(`[smoke] health ok db_ready=${json.db_ready} uses_socket=${json.db?.uses_cloudsql_socket ?? null}`);
   }
