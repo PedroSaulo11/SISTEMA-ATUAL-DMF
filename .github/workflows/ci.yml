@@ -38,8 +38,41 @@ jobs:
       - name: Smoke health
         run: npm run smoke:health
 
+      - name: Smoke multiuser concurrency (local contract)
+        run: npm run smoke:multiuser
+
       - name: Optional production audit fallback check
         if: ${{ secrets.BASE_URL != '' }}
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
         run: npm run check:audit-fallback:prod
+
+      - name: Optional production session hardening check
+        if: ${{ secrets.BASE_URL != '' }}
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          TEST_USERNAME: ${{ secrets.TEST_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
+        run: npm run check:session:prod
+
+      - name: Optional production tenant/RBAC check
+        if: ${{ secrets.BASE_URL != '' && (secrets.ACCESS_TOKEN != '' || (secrets.TEST_USERNAME != '' && secrets.TEST_PASSWORD != '')) }}
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          TEST_USERNAME: ${{ secrets.TEST_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
+          TEST_COMPANY: ${{ secrets.TEST_COMPANY }}
+          TEST_COMPANY_FORBIDDEN: ${{ secrets.TEST_COMPANY_FORBIDDEN }}
+        run: npm run check:multiuser:access:prod
+
+      - name: Optional production concurrent load check
+        if: ${{ secrets.BASE_URL != '' && secrets.ACCESS_TOKEN != '' }}
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          TEST_COMPANY: ${{ secrets.TEST_COMPANY }}
+          LOAD_WORKERS: ${{ secrets.LOAD_WORKERS }}
+          LOAD_ROUNDS: ${{ secrets.LOAD_ROUNDS }}
+          LOAD_PAUSE_MS: ${{ secrets.LOAD_PAUSE_MS }}
+        run: npm run load:prod:multiuser

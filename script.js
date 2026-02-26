@@ -63,6 +63,40 @@ function isAdminUser(user) {
     return normalizeRole(user && (user.cargo || user.role)) === 'admin';
 }
 
+async function tryRefreshUserSession() {
+    try {
+        const response = await fetch(`${getApiBase()}/api/auth/user-refresh`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({})
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        if (data && data.token) {
+            localStorage.setItem('dmf_api_token', data.token);
+        }
+        if (data && data.user && window.system) {
+            const current = window.system.currentUser || {};
+            window.system.currentUser = {
+                ...current,
+                ...data.user,
+                cargo: normalizeRole(data.user.role || current.cargo),
+                nome: data.user.name || data.user.username || current.nome,
+                additionalPermissions: Array.isArray(data.user.permissions) ? data.user.permissions : (current.additionalPermissions || [])
+            };
+            localStorage.setItem(window.system.storageKeys.SESSION, JSON.stringify(window.system.currentUser));
+            window.DMF_CONTEXT.usuarioLogado = window.system.currentUser;
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 function setFlowSyncStatus(message, tone = 'info') {
     const el = document.getElementById('flowSyncStatus');
     if (!el) return;
@@ -206,6 +240,7 @@ class SyncManager {
                 const response = await fetch(`${getApiBase()}/api/flow-payments/import?company=${encodeURIComponent(company)}`, {
                     method: 'POST',
                     cache: 'no-store',
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
@@ -219,6 +254,7 @@ class SyncManager {
                 const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(company)}`, {
                     method: 'POST',
                     cache: 'no-store',
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
@@ -231,6 +267,7 @@ class SyncManager {
                 const company = item.data?.company || this.core.data.currentCompany;
                 const response = await fetch(`${getApiBase()}/api/flow-payments/${item.data.id}/sign?company=${encodeURIComponent(company)}`, {
                     method: 'PATCH',
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
@@ -295,6 +332,7 @@ class AuthManager {
         try {
             const response = await fetch(`${getApiBase()}/api/auth/login`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: input, password: pass })
             });
@@ -347,7 +385,19 @@ class AuthManager {
         this.core.ui.setupDashboard();
     }
 
-    logout() {
+    async logout() {
+        try {
+            await fetch(`${getApiBase()}/api/auth/logout`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+        } catch (error) {
+            console.warn('API logout failed:', error.message);
+        }
         localStorage.removeItem(this.core.storageKeys.SESSION);
         localStorage.removeItem('dmf_api_token');
         this.core.currentUser = null;
@@ -506,7 +556,7 @@ class DataProcessor {
         this.flowFetchCooldownUntil = 0;
     }
 
-    async loadFromBackend(force = false, companyOverride = null) {
+    async loadFromBackend(force = false, companyOverride = null, allowRefresh = true) {
         const company = this.normalizeCompany(companyOverride || this.currentCompany);
         const now = Date.now();
         if (this.flowFetchInFlight) return false;
@@ -530,6 +580,7 @@ class DataProcessor {
         try {
             const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(company)}`, {
                 cache: 'no-store',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
@@ -537,9 +588,16 @@ class DataProcessor {
             });
             if (!response.ok) {
                 if (response.status === 401) {
+                    if (allowRefresh) {
+                        const refreshed = await tryRefreshUserSession();
+                        if (refreshed) {
+                            this.flowFetchInFlight = false;
+                            return this.loadFromBackend(force, company, false);
+                        }
+                    }
                     console.warn('Flow payments fetch unauthorized');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
-                    try { hardLogout(); } catch (_) {}
+                    window.dmfLogout?.();
                     this.resetFlowBackoff();
                     return false;
                 }
@@ -977,6 +1035,7 @@ class DataProcessor {
             const response = await fetch(`${getApiBase()}/api/flow-payments/import?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 cache: 'no-store',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
@@ -985,9 +1044,13 @@ class DataProcessor {
             });
             if (!response.ok) {
                 if (response.status === 401) {
+                    const refreshed = await tryRefreshUserSession();
+                    if (refreshed) {
+                        return this.syncImportToBackend();
+                    }
                     alert('Sessão expirada. Faça login novamente para sincronizar o fluxo.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
-                    try { hardLogout(); } catch (_) {}
+                    window.dmfLogout?.();
                 }
                 if (response.status === 403) {
                     alert('Sem permissão para sincronizar o fluxo.');
@@ -1395,6 +1458,7 @@ class DataProcessor {
             const response = await fetch(`${getApiBase()}/api/flow-payments?company=${encodeURIComponent(this.currentCompany)}`, {
                 method: 'POST',
                 cache: 'no-store',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
@@ -1403,9 +1467,13 @@ class DataProcessor {
             });
             if (!response.ok) {
                 if (response.status === 401) {
+                    const refreshed = await tryRefreshUserSession();
+                    if (refreshed) {
+                        return this.syncPaymentToBackend(record);
+                    }
                     alert('Sessão expirada. Faça login novamente para sincronizar o pagamento.');
                     setFlowSyncStatus('Sessão expirada. Faça login novamente.', 'warn');
-                    try { hardLogout(); } catch (_) {}
+                    window.dmfLogout?.();
                 }
                 if (response.status === 403) {
                     alert('Sem permissão para sincronizar o pagamento.');
@@ -1542,6 +1610,9 @@ class UIManager {
         this.userStatusInFlight = false;
         this.userStatusLastAt = 0;
         this.userStatusMinInterval = 60000;
+        this.sessionRefreshInFlight = false;
+        this.lastSessionRefreshAt = 0;
+        this.sessionRefreshMinInterval = 120000;
         this.companyFilter = 'DMF';
         this.selectedArchiveId = null;
         this.archiveCollapsedById = {};
@@ -2064,6 +2135,25 @@ class UIManager {
                 el.classList.add('is-ok');
             }
 
+            // Refresh silently before expiry when HttpOnly session is available.
+            if (
+                remaining <= 10 * 60 * 1000 &&
+                !this.sessionRefreshInFlight &&
+                (Date.now() - this.lastSessionRefreshAt) > this.sessionRefreshMinInterval
+            ) {
+                this.sessionRefreshInFlight = true;
+                this.lastSessionRefreshAt = Date.now();
+                tryRefreshUserSession()
+                    .then((ok) => {
+                        if (ok) {
+                            this.syncCurrentUserRole();
+                        }
+                    })
+                    .finally(() => {
+                        this.sessionRefreshInFlight = false;
+                    });
+            }
+
             const syncEl = document.getElementById('syncCountdown');
             if (syncEl) {
                 if (this.flowNextSyncAt) {
@@ -2096,12 +2186,21 @@ class UIManager {
         try {
             const response = await fetch(`${getApiBase()}/api/auth/user-status`, {
                 cache: 'no-store',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
                 }
             });
-            if (!response.ok) return;
+            if (!response.ok) {
+                if (response.status === 401) {
+                    const refreshed = await tryRefreshUserSession();
+                    if (refreshed) {
+                        return this.syncCurrentUserRole();
+                    }
+                }
+                return;
+            }
             const data = await response.json();
             const apiUser = data?.user;
             if (!apiUser || !this.core.currentUser) return;
@@ -2201,12 +2300,10 @@ class UIManager {
             clearTimeout(this.flowStreamReconnectTimer);
             this.flowStreamReconnectTimer = null;
         }
-        const token = localStorage.getItem('dmf_api_token');
-        if (!token) return;
         const company = this.core?.data?.currentCompany || this.companyFilter || 'DMF';
-        const url = `${getApiBase()}/api/flow-payments/stream?company=${encodeURIComponent(company)}&access_token=${encodeURIComponent(token)}`;
+        const url = `${getApiBase()}/api/flow-payments/stream?company=${encodeURIComponent(company)}`;
         try {
-            this.flowEventSource = new EventSource(url);
+            this.flowEventSource = new EventSource(url, { withCredentials: true });
         } catch (_) {
             this.flowEventSource = null;
             return;
@@ -4770,12 +4867,10 @@ function initDomBindings() {
     const revokeSelfButton = document.getElementById('btnRevokeSelf');
     if (revokeSelfButton) {
         revokeSelfButton.addEventListener('click', function () {
-            if (!isAdminUser(system?.currentUser)) {
-                return;
-            }
             if (!confirm('Revogar todas as sessões ativas e sair?')) return;
             fetch(`${getApiBase()}/api/auth/revoke-self`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     ...getAuthHeaders()
@@ -5311,12 +5406,6 @@ window.dmfLogout = function dmfLogout() {
         system?.ui?.stopDashboardSummaryAutoRefresh?.();
     } catch (e) {
         // ignore
-    }
-    try {
-        localStorage.removeItem('dmf_active_session');
-        localStorage.removeItem('dmf_api_token');
-    } catch (e) {
-        console.warn('Failed to clear local storage', e);
     }
     try {
         // Use the normal UI logout path (shows login screen). Avoid full reload to prevent

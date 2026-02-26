@@ -37,7 +37,10 @@ function isCi() {
 }
 
 function main() {
-  run('npm', ['run', 'check:phase3']);
+  // Keep phase3 deterministic/local.
+  // Production checks are executed explicitly below when BASE_URL is provided.
+  const phase3Env = { ...process.env, BASE_URL: '' };
+  run('npm', ['run', 'check:phase3'], phase3Env);
 
   if (has('BASE_URL')) {
     run('npm', ['run', 'smoke:prod']);

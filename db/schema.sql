@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS webhook_data (
 );
 
 CREATE TABLE IF NOT EXISTS flow_payments (
-    id TEXT PRIMARY KEY,
-    company TEXT,
+    id TEXT NOT NULL,
+    company TEXT NOT NULL DEFAULT 'DMF',
     fornecedor TEXT NOT NULL,
     data TEXT,
     descricao TEXT,
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS flow_payments (
     version INTEGER NOT NULL DEFAULT 0,
     updated_by TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (company, id)
 );
 
 CREATE TABLE IF NOT EXISTS flow_archives (
@@ -102,4 +103,16 @@ CREATE TABLE IF NOT EXISTS app_roles (
 CREATE TABLE IF NOT EXISTS user_sessions (
     user_id BIGINT PRIMARY KEY,
     revoked_after TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS app_user_refresh_sessions (
+    token_id TEXT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    family_id TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    rotated_at TIMESTAMPTZ,
+    user_agent TEXT,
+    ip TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

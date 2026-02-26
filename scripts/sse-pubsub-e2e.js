@@ -57,7 +57,7 @@ async function main() {
   );
 
   const paymentId = `sse-e2e-${Date.now()}`;
-  const sseUrl = `${base}/api/flow-payments/stream?company=${encodeURIComponent(company)}&access_token=${encodeURIComponent(token)}`;
+  const sseUrl = `${base}/api/flow-payments/stream?company=${encodeURIComponent(company)}`;
   const postUrl = `${base}/api/flow-payments?company=${encodeURIComponent(company)}`;
   const deleteUrl = `${base}/api/flow-payments/${encodeURIComponent(paymentId)}?company=${encodeURIComponent(company)}`;
   const statusUrl = `${base}/api/auth/user-status`;
@@ -80,7 +80,10 @@ async function main() {
   const ssePromise = (async () => {
     const res = await fetch(sseUrl, {
       method: 'GET',
-      headers: { Accept: 'text/event-stream' },
+      headers: {
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${token}`
+      },
       signal: controller.signal
     });
     if (!res.ok) {

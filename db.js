@@ -19,6 +19,14 @@ function getSequelize() {
   return sequelize;
 }
 
+function normalizeCompany(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'real energy' || v === 'real' || v === 'realenergy') return 'Real Energy';
+  if (v === 'jfx') return 'JFX';
+  if (v === 'dmf') return 'DMF';
+  return value ? String(value).trim() : null;
+}
+
 const UserModel = () => getSequelize().define('app_users', {
   id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
   username: { type: DataTypes.TEXT, unique: true, allowNull: false },
@@ -40,7 +48,7 @@ const TokenModel = () => getSequelize().define('api_tokens', {
 
 const FlowPaymentModel = () => getSequelize().define('flow_payments', {
   id: { type: DataTypes.TEXT, primaryKey: true },
-  company: { type: DataTypes.TEXT },
+  company: { type: DataTypes.TEXT, allowNull: false, defaultValue: 'DMF', primaryKey: true },
   fornecedor: { type: DataTypes.TEXT, allowNull: false },
   data: { type: DataTypes.TEXT },
   descricao: { type: DataTypes.TEXT },
@@ -612,11 +620,7 @@ async function listFlowPayments(company = null) {
   const Flow = FlowPaymentModel();
   let where = {};
   if (company) {
-    if (company === 'DMF') {
-      where = { [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { company };
-    }
+    where = { company: normalizeCompany(company) || company };
   }
   const rows = await Flow.findAll({
     where,
@@ -628,10 +632,8 @@ async function listFlowPayments(company = null) {
 async function getFlowPaymentsStats(companies = null) {
   const db = getSequelize();
   const list = Array.isArray(companies) ? companies.map(normalizeCompany).filter(Boolean) : null;
-  const includeNullForDMF = Array.isArray(list) ? list.includes('DMF') : false;
-
   const whereSql = list && list.length
-    ? `(company = ANY(:companies) OR (:includeNullForDMF = true AND company IS NULL))`
+    ? `(company = ANY(:companies))`
     : `TRUE`;
 
   const rows = await db.query(
@@ -651,7 +653,6 @@ async function getFlowPaymentsStats(companies = null) {
     {
       replacements: {
         companies: list || [],
-        includeNullForDMF,
       },
       type: Sequelize.QueryTypes.SELECT
     }
@@ -673,25 +674,29 @@ async function replaceFlowPayments(payments, company = null) {
   await db.transaction(async (transaction) => {
     let scopeWhere = {};
     if (company) {
-      if (company === 'DMF') {
-        scopeWhere = { [Op.or]: [{ company }, { company: null }] };
-      } else {
-        scopeWhere = { company };
-      }
+      scopeWhere = { company: normalizeCompany(company) || company };
     }
 
     const existingRows = await Flow.findAll({
       where: scopeWhere,
       transaction
     });
-    const existingById = new Map(existingRows.map((row) => [String(row.id), row.toJSON()]));
+    const existingById = new Map(
+      existingRows.map((row) => {
+        const item = row.toJSON();
+        const key = `${normalizeCompany(item.company) || item.company || 'DMF'}:${String(item.id)}`;
+        return [key, item];
+      })
+    );
 
     const merged = (payments || []).map((payment) => {
       const id = String(payment.id || '');
-      const existing = existingById.get(id);
+      const normalizedCompany = normalizeCompany(payment.company || company) || 'DMF';
+      const existing = existingById.get(`${normalizedCompany}:${id}`);
       if (!existing) {
         return {
           ...payment,
+          company: normalizedCompany,
           version: Number.isFinite(payment.version) ? Number(payment.version) : 0
         };
       }
@@ -701,6 +706,7 @@ async function replaceFlowPayments(payments, company = null) {
       if (!next.assinatura && existing.assinatura) {
         next.assinatura = existing.assinatura;
       }
+      next.company = normalizedCompany;
       const incomingVersion = Number.isFinite(next.version) ? Number(next.version) : 0;
       const existingVersion = Number(existing.version || 0);
       next.version = Math.max(incomingVersion, existingVersion);
@@ -723,11 +729,17 @@ async function replaceFlowPayments(payments, company = null) {
 
 async function upsertFlowPayment(payment) {
   const Flow = FlowPaymentModel();
+  const company = normalizeCompany(payment?.company) || 'DMF';
   // Preserve created_at for stable ordering across devices/imports.
   let createdAt = payment?.created_at || null;
   try {
     if (payment?.id) {
-      const existing = await Flow.findByPk(String(payment.id));
+      const existing = await Flow.findOne({
+        where: {
+          id: String(payment.id),
+          company
+        }
+      });
       if (existing?.created_at) {
         createdAt = existing.created_at;
       }
@@ -737,6 +749,7 @@ async function upsertFlowPayment(payment) {
   }
   await Flow.upsert({
     ...payment,
+    company,
     created_at: createdAt || new Date(),
     updated_at: new Date()
   });
@@ -748,11 +761,7 @@ async function updateFlowPaymentWithVersion(id, updates, expectedVersion, compan
   delete safeUpdates.created_at; // never mutate created_at (ordering key)
   let where = { id, version: expectedVersion };
   if (company) {
-    if (company === 'DMF') {
-      where = { id, version: expectedVersion, [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { id, version: expectedVersion, company };
-    }
+    where = { id, version: expectedVersion, company: normalizeCompany(company) || company };
   }
   const [count] = await Flow.update({
     ...safeUpdates,
@@ -760,7 +769,7 @@ async function updateFlowPaymentWithVersion(id, updates, expectedVersion, compan
     updated_at: new Date()
   }, { where });
   if (!count) return null;
-  const row = await Flow.findOne({ where: { id, ...(company ? (company === 'DMF' ? { [Op.or]: [{ company }, { company: null }] } : { company }) : {}) } });
+  const row = await Flow.findOne({ where: { id, ...(company ? { company: normalizeCompany(company) || company } : {}) } });
   return row ? row.toJSON() : null;
 }
 
@@ -768,11 +777,7 @@ async function updateFlowPayment(id, updates, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id };
   if (company) {
-    if (company === 'DMF') {
-      where = { id, [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { id, company };
-    }
+    where = { id, company: normalizeCompany(company) || company };
   }
   await Flow.update({ ...updates, updated_at: new Date() }, { where });
   const row = await Flow.findOne({ where });
@@ -783,11 +788,7 @@ async function getFlowPaymentById(id, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id };
   if (company) {
-    if (company === 'DMF') {
-      where = { id, [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { id, company };
-    }
+    where = { id, company: normalizeCompany(company) || company };
   }
   const row = await Flow.findOne({ where });
   return row ? row.toJSON() : null;
@@ -797,11 +798,7 @@ async function deleteFlowPayment(id, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id };
   if (company) {
-    if (company === 'DMF') {
-      where = { id, [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { id, company };
-    }
+    where = { id, company: normalizeCompany(company) || company };
   }
   const row = await Flow.findOne({ where });
   if (!row) return null;
@@ -814,11 +811,7 @@ async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
   const Flow = FlowPaymentModel();
   let where = { id, assinatura: { [Op.is]: null } };
   if (company) {
-    if (company === 'DMF') {
-      where = { id, assinatura: { [Op.is]: null }, [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { id, assinatura: { [Op.is]: null }, company };
-    }
+    where = { id, assinatura: { [Op.is]: null }, company: normalizeCompany(company) || company };
   }
   const [count] = await Flow.update({
     assinatura,
@@ -828,7 +821,7 @@ async function signFlowPaymentIfUnsigned(id, assinatura, company = null) {
   if (!count) {
     return null;
   }
-  const row = await Flow.findOne({ where: { id, ...(company ? (company === 'DMF' ? { [Op.or]: [{ company }, { company: null }] } : { company }) : {}) } });
+  const row = await Flow.findOne({ where: { id, ...(company ? { company: normalizeCompany(company) || company } : {}) } });
   return row ? row.toJSON() : null;
 }
 
@@ -857,6 +850,27 @@ async function validateDbSchema() {
       missing.push(item.table);
     }
   }
+  try {
+    const pkRows = await getSequelize().query(
+      `
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_name = 'flow_payments'
+          AND tc.constraint_type = 'PRIMARY KEY'
+        ORDER BY kcu.ordinal_position ASC
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const pkCols = (pkRows || []).map(r => String(r.column_name || ''));
+    if (!(pkCols.length === 2 && pkCols[0] === 'company' && pkCols[1] === 'id')) {
+      missing.push('flow_payments.pk(company,id)');
+    }
+  } catch (_) {
+    missing.push('flow_payments.pk(company,id)');
+  }
   return { ok: missing.length === 0, missing };
 }
 
@@ -864,11 +878,7 @@ async function listFlowArchives(company = null) {
   const Archive = FlowArchiveModel();
   let where = {};
   if (company) {
-    if (company === 'DMF') {
-      where = { [Op.or]: [{ company }, { company: null }] };
-    } else {
-      where = { company };
-    }
+    where = { company: normalizeCompany(company) || company };
   }
   const rows = await Archive.findAll({ where, order: [['created_at', 'DESC']] });
   return rows.map(r => r.toJSON());

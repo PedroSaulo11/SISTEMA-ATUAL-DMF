@@ -1,10 +1,13 @@
 runtime: nodejs22
 env: standard
+instance_class: F2
 
 automatic_scaling:
-  # Multiuser: allow >1 instances now that distributed controls are in place.
-  # Keep a conservative cap to contain costs while validating rollout.
-  max_instances: 2
+  # Keep warm capacity to reduce 503 during burst and allow broader horizontal scaling.
+  min_instances: 4
+  max_instances: 10
+  target_cpu_utilization: 0.65
+  target_throughput_utilization: 0.65
 
 beta_settings:
   cloud_sql_instances: project-b2fcff48-a0ca-4867-995:southamerica-east1:meu-banco-postgres
@@ -17,7 +20,7 @@ env_variables:
   NODE_ENV: "production"
   PERMISSIONS_ENFORCED: "true"
   SLOW_REQUEST_THRESHOLD_MS: "2000"
-  API_RATE_LIMIT_MAX: "600"
+  API_RATE_LIMIT_MAX: "3000"
   ENFORCE_COMPANY_ACCESS: "true"
   DEFAULT_COMPANIES: "DMF,JFX,Real Energy"
   ALLOW_ALL_COMPANIES_WHEN_UNSET: "false"
@@ -29,6 +32,7 @@ env_variables:
   AUTH_RATE_LIMIT_MAX: "50"
   DB_CONNECT_RETRIES: "10"
   DB_CONNECT_RETRY_DELAY_MS: "2000"
+  DB_SCHEMA_STRICT: "true"
   EVENT_WEBHOOK_URL: ""
   ALLOW_PUBLIC_REGISTER: "false"
   ENABLE_REDIS_CACHE: "true"

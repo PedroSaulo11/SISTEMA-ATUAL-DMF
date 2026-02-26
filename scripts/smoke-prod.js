@@ -103,13 +103,16 @@ async function waitForDbReady(base, { retries = 8, retryDelayMs = 2000 } = {}) {
   return last;
 }
 
-async function readSseOnce(url, timeoutMs = 7000) {
+async function readSseOnce(url, timeoutMs = 7000, token = '') {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs).unref?.();
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { Accept: 'text/event-stream' },
+      headers: {
+        Accept: 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
       signal: controller.signal
     });
     assert(res.ok, `SSE GET failed: HTTP ${res.status}`);
@@ -138,11 +141,11 @@ async function readSseOnce(url, timeoutMs = 7000) {
   }
 }
 
-async function readSseWithRetry(url, { timeoutMs = 7000, retries = 3, retryDelayMs = 1200 } = {}) {
+async function readSseWithRetry(url, token = '', { timeoutMs = 7000, retries = 3, retryDelayMs = 1200 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      return await readSseOnce(url, timeoutMs);
+      return await readSseOnce(url, timeoutMs, token);
     } catch (error) {
       lastError = error;
       const msg = error && error.message ? error.message : String(error);
@@ -246,9 +249,9 @@ async function main() {
     }
 
     // SSE endpoint: must connect and emit a flow_update event with type=connected
-    const sseUrl = `${base}/api/flow-payments/stream?company=${encodeURIComponent(company)}&access_token=${encodeURIComponent(token)}`;
+    const sseUrl = `${base}/api/flow-payments/stream?company=${encodeURIComponent(company)}`;
     try {
-      const evt = await readSseWithRetry(sseUrl, {
+      const evt = await readSseWithRetry(sseUrl, token, {
         timeoutMs: sseTimeoutMs,
         retries: sseRetries,
         retryDelayMs: sseRetryDelayMs

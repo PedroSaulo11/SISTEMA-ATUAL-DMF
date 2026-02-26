@@ -630,7 +630,7 @@ const corsOrigins = process.env.CORS_ORIGINS
 app.use(cors({
   origin: corsOrigins.length ? corsOrigins : false,
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
 }));
 
@@ -1263,11 +1263,11 @@ async function authenticateToken(req, res, next) {
   }
 }
 
-// SSE auth: allow token via query param to support EventSource
+// SSE auth: accept Bearer token or HttpOnly access cookie.
 async function authenticateTokenFromQuery(req, res, next) {
   const authHeader = req.headers['authorization'];
   const cookieToken = httpOnlySessionEnabled() ? parseCookies(req)[ACCESS_COOKIE_NAME] : null;
-  const token = (authHeader && authHeader.split(' ')[1]) || req.query?.token || req.query?.access_token || cookieToken;
+  const token = (authHeader && authHeader.split(' ')[1]) || cookieToken;
   if (!token) {
     logger.warn('Access attempt without token', { ip: req.ip, path: req.path });
     await recordAuditEvent(req, 'AUTH_MISSING_TOKEN', `Missing token for ${req.path}`);
@@ -3168,7 +3168,7 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), auth
 });
 
 // Self: revoke current sessions (logout everywhere)
-app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('admin'), authorizePermission('revoke_sessions'), distributedCriticalLimiter, criticalLimiter, async (req, res) => {
+app.post('/api/auth/revoke-self', authenticateToken, authorizeRole('user'), distributedCriticalLimiter, criticalLimiter, async (req, res) => {
   try {
     await setUserSessionRevokedAfter(req.user?.id, new Date());
     if (isDbReady()) {

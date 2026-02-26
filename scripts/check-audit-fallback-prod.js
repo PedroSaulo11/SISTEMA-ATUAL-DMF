@@ -23,6 +23,11 @@ function runGcloud(args) {
     result = spawnSync('gcloud', args, { encoding: 'utf8' });
   }
   if (result.error) {
+    if (result.error && result.error.code === 'ENOENT') {
+      const err = new Error('gcloud_not_installed: gcloud binary not found in PATH');
+      err.code = 'GCLOUD_NOT_INSTALLED';
+      throw err;
+    }
     throw result.error;
   }
   if (result.status !== 0) {
@@ -36,6 +41,15 @@ function runGcloud(args) {
     ) {
       const err = new Error(`gcloud_not_authenticated: ${msg}`);
       err.code = 'GCLOUD_NOT_AUTHENTICATED';
+      throw err;
+    }
+    if (
+      normalized.includes('is not recognized as an internal or external command') ||
+      normalized.includes('não é reconhecido como um comando interno') ||
+      normalized.includes('command not found')
+    ) {
+      const err = new Error(`gcloud_not_installed: ${msg}`);
+      err.code = 'GCLOUD_NOT_INSTALLED';
       throw err;
     }
     throw new Error(`gcloud ${args.join(' ')} failed: ${msg}`);
@@ -76,6 +90,10 @@ async function main() {
   } catch (error) {
     if (error && error.code === 'GCLOUD_NOT_AUTHENTICATED') {
       console.log('[audit-fallback] SKIP gcloud not authenticated in this environment');
+      return;
+    }
+    if (error && error.code === 'GCLOUD_NOT_INSTALLED') {
+      console.log('[audit-fallback] SKIP gcloud not installed in this environment');
       return;
     }
     throw error;
