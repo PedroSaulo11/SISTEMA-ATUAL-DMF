@@ -1253,12 +1253,13 @@ class DataProcessor {
             pushMemoryRow('Memória de calculos');
             companies.forEach((company) => {
                 const entry = totalsByCompany[company];
-                pushMemoryRow(company, `R$ ${entry.total.toLocaleString('pt-BR')}`);
                 Object.entries(entry.centers)
-                    .sort((a, b) => b[1] - a[1])
-                    .forEach(([center, total]) => {
-                        pushMemoryRow(`- ${center}`, `R$ ${total.toLocaleString('pt-BR')}`);
+                    .map(([center, total]) => ({ center: String(center || '').trim(), total }))
+                    .sort((a, b) => b.center.length - a.center.length)
+                    .forEach((item) => {
+                        pushMemoryRow(`- ${item.center}`, `R$ ${item.total.toLocaleString('pt-BR')}`);
                     });
+                pushMemoryRow('Valor Total', `R$ ${entry.total.toLocaleString('pt-BR')}`);
             });
         }
         const ws = XLSX.utils.aoa_to_sheet(aoa);
