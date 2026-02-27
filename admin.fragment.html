@@ -2,6 +2,7 @@
                 <h2>Administração</h2>
                 <div class="admin-tabs">
                     <button class="tab-btn active" data-admin-tab="users">Gerenciar Usuários</button>
+                    <button class="tab-btn" data-admin-tab="sessions" id="adminSessionsTabButton">Sessões Ativas</button>
                     <button class="tab-btn" data-admin-tab="roles">Gerenciar Cargos</button>
                     <button class="tab-btn" data-admin-tab="centers">Permissões Centros</button>
                     <button class="tab-btn" data-admin-tab="backup">Backup/Restore</button>
@@ -11,6 +12,13 @@
                         <h3>Usuários do Sistema</h3>
                         <button id="btnCreateUser" class="btn btn-primary">Criar Usuário</button>
                         <div id="userGrid"></div>
+                    </div>
+                    <div id="sessionsTab" class="admin-tab-content hidden">
+                        <h3>Sessões Ativas</h3>
+                        <div class="actions">
+                            <button id="btnRefreshActiveSessions" class="btn btn-ghost">Atualizar Sessões</button>
+                        </div>
+                        <div id="activeSessionsGrid"></div>
                     </div>
                     <div id="rolesTab" class="admin-tab-content hidden">
                         <h3>Cargos e Permissões</h3>

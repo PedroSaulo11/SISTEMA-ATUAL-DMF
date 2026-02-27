@@ -655,6 +655,52 @@ async function revokeUserRefreshSessionsByFamily(familyId) {
   });
 }
 
+async function listActiveUserRefreshSessions(limit = 200) {
+  const db = getSequelize();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
+  const rows = await db.query(
+    `
+      SELECT
+        s.token_id,
+        s.user_id,
+        s.family_id,
+        s.expires_at,
+        s.user_agent,
+        s.ip,
+        s.created_at,
+        u.username,
+        u.email,
+        u.name,
+        u.role
+      FROM app_user_refresh_sessions s
+      LEFT JOIN app_users u ON u.id = s.user_id
+      WHERE s.revoked_at IS NULL
+        AND s.rotated_at IS NULL
+        AND s.expires_at > NOW()
+      ORDER BY s.created_at DESC
+      LIMIT :limit
+    `,
+    {
+      replacements: { limit: safeLimit },
+      type: Sequelize.QueryTypes.SELECT
+    }
+  );
+
+  return (rows || []).map((row) => ({
+    token_id: row.token_id,
+    user_id: Number(row.user_id),
+    family_id: row.family_id,
+    expires_at: row.expires_at ? new Date(row.expires_at).toISOString() : null,
+    user_agent: row.user_agent || null,
+    ip: row.ip || null,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    username: row.username || null,
+    email: row.email || null,
+    name: row.name || null,
+    role: row.role || null
+  }));
+}
+
 async function listFlowPayments(company = null) {
   const Flow = FlowPaymentModel();
   let where = {};
@@ -1174,6 +1220,7 @@ module.exports = {
   rotateUserRefreshSession,
   revokeUserRefreshSessionsByUser,
   revokeUserRefreshSessionsByFamily,
+  listActiveUserRefreshSessions,
   insertWebhook,
   validateDbSchema,
 };

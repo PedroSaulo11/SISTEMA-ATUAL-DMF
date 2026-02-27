@@ -67,6 +67,7 @@ const {
   rotateUserRefreshSession,
   revokeUserRefreshSessionsByUser,
   revokeUserRefreshSessionsByFamily,
+  listActiveUserRefreshSessions,
   insertWebhook,
   validateDbSchema
 } = require('./db');
@@ -1639,7 +1640,11 @@ app.post('/api/auth/login', [
         }).catch(() => {});
       }
       logger.warn('Login attempt with non-existent user', { username });
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({
+        error: 'Invalid credentials',
+        reason: 'USER_NOT_FOUND',
+        message: 'Usuário incorreto.'
+      });
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
@@ -1653,7 +1658,11 @@ app.post('/api/auth/login', [
         }).catch(() => {});
       }
       logger.warn('Login attempt with wrong password', { username });
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({
+        error: 'Invalid credentials',
+        reason: 'INVALID_PASSWORD',
+        message: 'Senha incorreta.'
+      });
     }
 
     // Update last login
@@ -1669,6 +1678,12 @@ app.post('/api/auth/login', [
     user.last_login = new Date().toISOString();
 
     // Generate user access token (legacy body token) and optional HttpOnly session cookies.
+    if (isDbReady()) {
+      // Enforce single active session per user across devices.
+      // Use a small clock-skew window to avoid revoking the token issued in this same login.
+      await setUserSessionRevokedAfter(user.id, new Date(Date.now() - 2000));
+      await revokeUserRefreshSessionsByUser(user.id);
+    }
     const token = signUserAccessToken(user);
     if (httpOnlySessionEnabled()) {
       await issueHttpOnlySession(res, req, user);
@@ -3164,6 +3179,20 @@ app.post('/api/auth/revoke/:id', authenticateToken, authorizeRole('admin'), auth
   } catch (error) {
     logger.error('Failed to revoke sessions', { error: error.message });
     res.status(500).json({ success: false, error: 'Failed to revoke sessions' });
+  }
+});
+
+// Admin: list active sessions (HttpOnly refresh sessions not revoked/rotated/expired)
+app.get('/api/auth/sessions/active', authenticateToken, authorizeRole('admin'), authorizePermission('admin_access'), async (req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ success: false, error: 'Database not ready' });
+    }
+    const sessions = await listActiveUserRefreshSessions(300);
+    res.json({ success: true, sessions });
+  } catch (error) {
+    logger.error('Failed to list active sessions', { error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to list active sessions' });
   }
 });
 

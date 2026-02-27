@@ -350,7 +350,20 @@ class AuthManager {
                 this.setSession(apiUser);
                 return;
             }
-            alert("Falha na autenticação.");
+            let apiErrorMessage = 'Falha na autenticação.';
+            try {
+                const err = await response.json();
+                if (err && typeof err.message === 'string' && err.message.trim()) {
+                    apiErrorMessage = err.message.trim();
+                } else if (err?.reason === 'INVALID_PASSWORD') {
+                    apiErrorMessage = 'Senha incorreta.';
+                } else if (err?.reason === 'USER_NOT_FOUND') {
+                    apiErrorMessage = 'Usuário incorreto.';
+                }
+            } catch (_) {
+                // ignore non-json responses
+            }
+            alert(apiErrorMessage);
             return;
         } catch (error) {
             console.warn('API login failed:', error.message);
@@ -362,14 +375,16 @@ class AuthManager {
         }
 
         // Verificar usuários armazenados por usuario ou email
-        const user = this.core.admin.users.find(u =>
-            (u.usuario === input || u.email === input) &&
-            (u.senha === hash(pass) || u.senha === pass)
+        const userByLogin = this.core.admin.users.find(u =>
+            (u.usuario === input || u.email === input)
         );
+        const user = userByLogin && (userByLogin.senha === hash(pass) || userByLogin.senha === pass)
+            ? userByLogin
+            : null;
         if (user) {
             this.setSession(user);
         } else {
-            alert("Falha na autenticação.");
+            alert(userByLogin ? "Senha incorreta." : "Usuário incorreto.");
         }
     }
 
@@ -1271,6 +1286,10 @@ class DataProcessor {
     }
 
     clearAll() {
+        if (!isAdminUser(this.core.currentUser)) {
+            alert('Somente Admin pode remover todo o fluxo de pagamentos.');
+            return;
+        }
         if (confirm('Tem certeza que deseja remover todo o fluxo de pagamentos? Esta ação não pode ser desfeita.')) {
             this.records = [];
             this.save();
@@ -1871,6 +1890,10 @@ class UIManager {
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
             });
+        }
+
+        if (viewId === 'assistente') {
+            window.assistant?.init?.();
         }
 
         if (viewId === 'payments') {
@@ -2577,12 +2600,20 @@ class UIManager {
     }
 
     switchAdminTab(tab, activeButton = null) {
+        if (tab === 'sessions' && !isAdminUser(this.core.currentUser)) {
+            tab = 'users';
+        }
         document.querySelectorAll('.admin-tab-content').forEach(t => t.classList.add('hidden'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.getElementById(`${tab}Tab`).classList.remove('hidden');
         if (activeButton) activeButton.classList.add('active');
         if (tab === 'centers') {
             this.renderCenterPermissions();
+        } else if (tab === 'sessions') {
+            this.renderActiveSessionsTable();
+            this.core.admin.refreshActiveSessionsFromApi().then(() => {
+                this.renderActiveSessionsTable();
+            });
         }
     }
 
@@ -2632,6 +2663,13 @@ class UIManager {
             this.core.admin.refreshUsersFromApi().then(() => {
                 this.renderUsersTable();
             });
+            if (isAdminUser(this.core.currentUser)) {
+                this.core.admin.refreshActiveSessionsFromApi().then(() => {
+                    this.renderActiveSessionsTable();
+                });
+            } else {
+                this.renderActiveSessionsTable();
+            }
             this.core.admin.refreshRolesFromApi().then(() => {
                 this.renderRolesTable();
             });
@@ -2652,6 +2690,7 @@ class UIManager {
         const importBtn = document.getElementById('btnImportPayments');
         const exportBtn = document.getElementById('btnExportPayments');
         const addPaymentBtn = document.getElementById('btnAddPayment');
+        const clearFlowBtn = document.getElementById('btnClearPayments');
         const auditNavBtn = document.querySelector('[data-nav="audit"]');
         const archiveBtn = document.getElementById('btnArchiveFlow');
         const archiveBottomBtn = document.getElementById('btnArchiveFlowBottom');
@@ -2662,6 +2701,9 @@ class UIManager {
         const revokeSelfBtn = document.getElementById('btnRevokeSelf');
         const quickImportBtn = document.getElementById('btnQuickImport');
         const quickExportBtn = document.getElementById('btnQuickExport');
+        const sessionsTabButton = document.getElementById('adminSessionsTabButton');
+        const sessionsTab = document.getElementById('sessionsTab');
+        const canManageActiveSessions = isAdminUser(this.core.currentUser);
 
         const canImport = this.core.admin.hasPermission(this.core.currentUser, 'import_payments');
         const canExport = this.core.admin.hasPermission(this.core.currentUser, 'export_payments');
@@ -2684,6 +2726,11 @@ class UIManager {
         if (addPaymentBtn) {
             addPaymentBtn.classList.toggle('hidden', !canAdd);
             addPaymentBtn.disabled = !canAdd;
+        }
+        if (clearFlowBtn) {
+            const canClearAll = isAdminUser(this.core.currentUser);
+            clearFlowBtn.classList.toggle('hidden', !canClearAll);
+            clearFlowBtn.disabled = !canClearAll;
         }
         if (archiveBtn) {
             archiveBtn.classList.toggle('hidden', !canArchiveFlow);
@@ -2721,6 +2768,20 @@ class UIManager {
         if (quickExportBtn) {
             quickExportBtn.classList.toggle('hidden', !canExport);
             quickExportBtn.disabled = !canExport;
+        }
+        if (sessionsTabButton) {
+            sessionsTabButton.classList.toggle('hidden', !canManageActiveSessions);
+            sessionsTabButton.disabled = !canManageActiveSessions;
+        }
+        if (sessionsTab) {
+            sessionsTab.classList.toggle('hidden', !canManageActiveSessions);
+        }
+        if (!canManageActiveSessions) {
+            const currentActiveAdminTab = document.querySelector('.admin-tabs .tab-btn.active');
+            if (currentActiveAdminTab && currentActiveAdminTab.getAttribute('data-admin-tab') === 'sessions') {
+                const fallbackButton = document.querySelector('[data-admin-tab="users"]');
+                this.switchAdminTab('users', fallbackButton);
+            }
         }
     }
 
@@ -2768,6 +2829,84 @@ class UIManager {
             });
             body.dataset.boundUsers = 'true';
         }
+    }
+
+    renderActiveSessionsTable() {
+        const container = document.getElementById('activeSessionsGrid');
+        if (!container) return;
+        if (!isAdminUser(this.core.currentUser)) {
+            container.innerHTML = '';
+            return;
+        }
+        const sessions = Array.isArray(this.core.admin.activeSessions) ? this.core.admin.activeSessions : [];
+        if (!sessions.length) {
+            container.innerHTML = '<div class="hint">Nenhuma sessão ativa encontrada.</div>';
+            return;
+        }
+        container.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Usuário</th>
+                        <th>Cargo</th>
+                        <th>Início</th>
+                        <th>Expira em</th>
+                        <th>IP</th>
+                        <th>Tipo</th>
+                        <th>Navegador</th>
+                        <th>Sistema</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${sessions.map((s) => `
+                        ${(() => {
+                            const meta = this.describeSessionAgent(s.user_agent);
+                            return `
+                        <tr>
+                            <td>${s.display_name || s.username || '-'}</td>
+                            <td>${s.role || '-'}</td>
+                            <td>${s.created_at ? new Date(s.created_at).toLocaleString('pt-BR') : '-'}</td>
+                            <td>${s.expires_at ? new Date(s.expires_at).toLocaleString('pt-BR') : '-'}</td>
+                            <td>${s.ip || '-'}</td>
+                            <td title="${s.user_agent || ''}">${meta.deviceType}</td>
+                            <td title="${s.user_agent || ''}">${meta.browser}</td>
+                            <td title="${s.user_agent || ''}">${meta.os}</td>
+                        </tr>
+                            `;
+                        })()}
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    describeSessionAgent(userAgentRaw) {
+        const ua = String(userAgentRaw || '').toLowerCase();
+        if (!ua) {
+            return { deviceType: '-', browser: '-', os: '-' };
+        }
+
+        const isMobile = /android|iphone|ipad|ipod|windows phone|mobile/.test(ua);
+        const isBotOrScript = /node|curl|wget|postman|powershell|insomnia/.test(ua);
+        const deviceType = isBotOrScript ? 'Script/CLI' : (isMobile ? 'Celular' : 'Computador');
+
+        let browser = 'Desconhecido';
+        if (ua.includes('edg/')) browser = 'Edge';
+        else if (ua.includes('opr/') || ua.includes('opera')) browser = 'Opera';
+        else if (ua.includes('chrome/') && !ua.includes('edg/')) browser = 'Chrome';
+        else if (ua.includes('firefox/')) browser = 'Firefox';
+        else if (ua.includes('safari/') && !ua.includes('chrome/')) browser = 'Safari';
+        else if (ua.includes('node')) browser = 'Node';
+        else if (ua.includes('powershell')) browser = 'PowerShell';
+
+        let os = 'Desconhecido';
+        if (ua.includes('windows')) os = 'Windows';
+        else if (ua.includes('android')) os = 'Android';
+        else if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) os = 'iOS';
+        else if (ua.includes('mac os') || ua.includes('macintosh')) os = 'macOS';
+        else if (ua.includes('linux')) os = 'Linux';
+
+        return { deviceType, browser, os };
     }
 
     renderRolesTable() {
@@ -4068,6 +4207,7 @@ class AdminManager {
         ensureRole('gestor', ['sign_payments']);
         ensureRole('user', []);
         this.centerPermissions = JSON.parse(localStorage.getItem(core.storageKeys.COST_CENTER_RULES) || '{}');
+        this.activeSessions = [];
         this.saveUsers();
         this.saveRoles();
         this.saveCenterPermissions();
@@ -4160,6 +4300,46 @@ class AdminManager {
             return true;
         } catch (error) {
             console.warn('API list users unavailable:', error.message);
+            return false;
+        }
+    }
+
+    async refreshActiveSessionsFromApi() {
+        if (!isAdminUser(this.core.currentUser)) {
+            this.activeSessions = [];
+            return false;
+        }
+        if (!getAuthHeaders().Authorization) return false;
+        try {
+            const response = await fetch(`${getApiBase()}/api/auth/sessions/active`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                }
+            });
+            if (!response.ok) {
+                console.warn('API list active sessions failed:', response.status);
+                this.activeSessions = [];
+                return false;
+            }
+            const data = await response.json();
+            this.activeSessions = (data.sessions || []).map((session) => ({
+                token_id: session.token_id,
+                user_id: Number(session.user_id),
+                family_id: session.family_id,
+                created_at: session.created_at || null,
+                expires_at: session.expires_at || null,
+                ip: session.ip || null,
+                user_agent: session.user_agent || null,
+                username: session.username || null,
+                email: session.email || null,
+                role: session.role || null,
+                display_name: session.name || session.username || null
+            }));
+            return true;
+        } catch (error) {
+            console.warn('API list active sessions unavailable:', error.message);
+            this.activeSessions = [];
             return false;
         }
     }
@@ -4953,6 +5133,310 @@ class CobliManager {
             this.updateInterval = null;
         }
     }
+
+}
+
+class SystemAssistant {
+    constructor(core) {
+        this.core = core;
+        this.messagesEl = null;
+        this.inputEl = null;
+        this.quickPromptsEl = null;
+        this.history = [];
+        this.maxHistory = 80;
+        this.learning = new Map();
+        this.quickPrompts = [
+            'Resumo da empresa atual',
+            'Quantos pagamentos pendentes?',
+            'Top 5 centros de custo',
+            'Ir para fluxo DMF',
+            'Mostrar somente pendentes',
+            'Recarregar pagamentos',
+            'Exportar fluxo atual',
+            'Arquivar fluxo atual'
+        ];
+    }
+
+    init() {
+        this.messagesEl = document.getElementById('chatMessages');
+        this.inputEl = document.getElementById('chatInput');
+        this.quickPromptsEl = document.getElementById('chatQuickPrompts');
+        if (!this.messagesEl || !this.inputEl) return;
+        this.renderQuickPrompts();
+
+        const clearBtn = document.getElementById('chatClearBtn');
+        if (clearBtn && !clearBtn.dataset.boundAssistantClear) {
+            clearBtn.dataset.boundAssistantClear = 'true';
+            clearBtn.addEventListener('click', () => this.clear());
+        }
+        if (!this.inputEl.dataset.boundAssistantEnter) {
+            this.inputEl.dataset.boundAssistantEnter = 'true';
+            this.inputEl.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    this.sendMessage();
+                }
+            });
+        }
+        if (!this.messagesEl.dataset.assistantBoot) {
+            this.messagesEl.dataset.assistantBoot = 'true';
+            this.addMessage('assistant', `Assistente pronto. Empresa atual: ${this.getCurrentCompany()}.`);
+        }
+    }
+
+    renderQuickPrompts() {
+        if (!this.quickPromptsEl) return;
+        this.quickPromptsEl.innerHTML = this.quickPrompts.map((prompt) => `
+            <button type="button" class="chat-quick-btn" data-assistant-prompt="${prompt}">${prompt}</button>
+        `).join('');
+        this.quickPromptsEl.querySelectorAll('[data-assistant-prompt]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const text = btn.getAttribute('data-assistant-prompt') || '';
+                if (!text) return;
+                this.inputEl.value = text;
+                this.sendMessage();
+            });
+        });
+    }
+
+    clear() {
+        this.history = [];
+        if (this.messagesEl) this.messagesEl.innerHTML = '';
+        this.addMessage('assistant', 'Conversa limpa.');
+    }
+
+    addMessage(role, text) {
+        if (!this.messagesEl) return;
+        const safeRole = role === 'user' ? 'user' : 'assistant';
+        const wrap = document.createElement('div');
+        wrap.className = `chat-message ${safeRole}`;
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+        bubble.textContent = String(text || '');
+        wrap.appendChild(bubble);
+        this.messagesEl.appendChild(wrap);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        this.history.push({ role: safeRole, text: String(text || ''), at: Date.now() });
+        if (this.history.length > this.maxHistory) this.history.shift();
+    }
+
+    getCurrentCompany() {
+        return this.core?.data?.currentCompany || this.core?.ui?.companyFilter || 'DMF';
+    }
+
+    getCurrentRecords() {
+        return Array.isArray(this.core?.data?.records) ? this.core.data.records : [];
+    }
+
+    getCurrentStats() {
+        const records = this.getCurrentRecords();
+        const total = records.reduce((sum, p) => sum + Math.abs(Number(p?.valor) || 0), 0);
+        const pending = records.filter((p) => !p?.assinatura).length;
+        const signed = records.filter((p) => !!p?.assinatura).length;
+        return { total, pending, signed, count: records.length };
+    }
+
+    getTopCenters(limit = 5) {
+        const totals = new Map();
+        this.getCurrentRecords().forEach((p) => {
+            const center = String(p?.centro || 'Sem centro').trim() || 'Sem centro';
+            const value = Math.abs(Number(p?.valor) || 0);
+            totals.set(center, (totals.get(center) || 0) + value);
+        });
+        return Array.from(totals.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, limit);
+    }
+
+    can(permission) {
+        return !!this.core?.admin?.hasPermission?.(this.core?.currentUser, permission);
+    }
+
+    addLearning(key, value) {
+        const k = String(key || '').trim();
+        const v = String(value || '').trim();
+        if (!k || !v) return;
+        if (!this.learning.has(k)) this.learning.set(k, new Set());
+        this.learning.get(k).add(v);
+    }
+
+    addLearningQuestion(question, answer) {
+        const q = String(question || '').trim().toLowerCase();
+        const a = String(answer || '').trim();
+        if (!q || !a) return;
+        this.learning.set(`q:${q}`, new Set([a]));
+    }
+
+    normalizeText(text) {
+        return String(text || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .trim();
+    }
+
+    resolveCompanyFromText(text) {
+        const normalized = this.normalizeText(text);
+        if (/\breal\s*energy\b|\brealenergy\b|\breal\b/.test(normalized)) return 'Real Energy';
+        if (/\bjfx\b/.test(normalized)) return 'JFX';
+        if (/\bdmf\b/.test(normalized)) return 'DMF';
+        return null;
+    }
+
+    async goToCompanyFlow(company) {
+        const targetCompany = this.core?.ui?.normalizeCompany?.(company) || company;
+        const navBtn = document.querySelector(`[data-nav="payments"][data-company="${targetCompany}"]`);
+        const sidebarPayments = document.querySelector('[data-nav="payments"]');
+        const currentTabBtn = document.querySelector('[data-payments-tab="current"]');
+        this.core?.ui?.navigate?.('payments', navBtn || sidebarPayments || null);
+        if (currentTabBtn) this.core?.ui?.switchPaymentsTab?.('current', currentTabBtn);
+        this.core?.data?.setCurrentCompany?.(targetCompany);
+        this.core?.ui?.setCompanyFilter?.(targetCompany);
+        if (this.core?.ui?.paymentFilters) {
+            this.core.ui.paymentFilters.query = '';
+            this.core.ui.paymentFilters.pendingOnly = false;
+        }
+        const quickSearchInput = document.getElementById('paymentsQuickSearch');
+        if (quickSearchInput) quickSearchInput.value = '';
+        const pendingBtn = document.getElementById('btnFilterPending');
+        if (pendingBtn) pendingBtn.classList.remove('is-active');
+        await this.core?.data?.loadFromBackend?.(true, targetCompany);
+        this.core?.ui?.renderPaymentsTable?.();
+        this.core?.ui?.updateStats?.();
+    }
+
+    setPendingFilter(enabled) {
+        this.core.ui.paymentFilters.pendingOnly = !!enabled;
+        const pendingBtn = document.getElementById('btnFilterPending');
+        if (pendingBtn) pendingBtn.classList.toggle('is-active', !!enabled);
+        this.core?.ui?.renderPaymentsTable?.();
+    }
+
+    countPending(records = []) {
+        return (records || []).filter((p) => !p?.assinatura).length;
+    }
+
+    async showOnlyPendingPayments() {
+        const current = this.getCurrentCompany();
+        const all = ['DMF', 'JFX', 'Real Energy'];
+        const ordered = [current, ...all.filter((c) => c !== current)];
+
+        for (const company of ordered) {
+            await this.goToCompanyFlow(company);
+            const pending = this.countPending(this.getCurrentRecords());
+            if (pending > 0) {
+                this.setPendingFilter(true);
+                return {
+                    found: true,
+                    company,
+                    pending,
+                    total: this.getCurrentRecords().length
+                };
+            }
+        }
+
+        // Sem pendentes em nenhuma empresa: remove filtro para evitar tela "vazia" confusa.
+        this.setPendingFilter(false);
+        return { found: false };
+    }
+
+    async runCommand(text) {
+        const normalized = this.normalizeText(text);
+        const company = this.getCurrentCompany();
+
+        if (normalized.includes('ir para fluxo') || normalized.includes('abrir fluxo') || normalized.includes('mudar fluxo')) {
+            const target = this.resolveCompanyFromText(normalized);
+            if (!target) return 'Informe a empresa no comando: DMF, JFX ou Real Energy.';
+            await this.goToCompanyFlow(target);
+            return `Fluxo de Pagamentos ${target} aberto.`;
+        }
+        if (normalized.includes('somente pendente') || normalized.includes('mostrar pendente') || normalized.includes('filtrar pendente')) {
+            const currentTabBtn = document.querySelector('[data-payments-tab="current"]');
+            if (currentTabBtn) this.core?.ui?.switchPaymentsTab?.('current', currentTabBtn);
+            this.core?.ui?.navigate?.('payments', document.querySelector('[data-nav="payments"]'));
+            const result = await this.showOnlyPendingPayments();
+            if (!result.found) {
+                return 'Não há pagamentos pendentes de assinatura em DMF, JFX ou Real Energy no momento.';
+            }
+            return `Filtro aplicado: ${result.pending} pendente(s) em ${result.company} (mostrando ${result.pending} de ${result.total}).`;
+        }
+        if (normalized.includes('arquivar fluxo') || normalized.includes('armazenar fluxo')) {
+            const isAdmin = isAdminUser(this.core?.currentUser);
+            if (!isAdmin) return 'Ação permitida apenas para admin.';
+            if (!this.can('archive_flow')) return 'Você não tem permissão para arquivar fluxos.';
+            const ok = window.confirm('Confirmar arquivamento do fluxo atual?');
+            if (!ok) return 'Arquivamento cancelado.';
+            const archive = await this.core?.data?.archiveCurrentFlow?.({ forceUnsigned: true });
+            if (!archive) return 'Não foi possível arquivar o fluxo.';
+            this.core?.ui?.renderPaymentsTable?.();
+            this.core?.ui?.updateStats?.();
+            await this.core?.ui?.refreshArchivesWithSkeleton?.();
+            return `Fluxo atual arquivado com sucesso (${archive?.label || 'sem rótulo'}).`;
+        }
+
+        if (normalized.includes('resumo')) {
+            const s = this.getCurrentStats();
+            return `Empresa ${company}: total R$ ${s.total.toLocaleString('pt-BR')}, registros ${s.count}, assinados ${s.signed}, pendentes ${s.pending}.`;
+        }
+        if (normalized.includes('pendente')) {
+            const s = this.getCurrentStats();
+            return `Há ${s.pending} pagamento(s) pendente(s) na empresa ${company}.`;
+        }
+        if (normalized.includes('top') && normalized.includes('centro')) {
+            const top = this.getTopCenters(5);
+            if (!top.length) return 'Sem dados de centros para a empresa atual.';
+            return top.map((item, idx) => `${idx + 1}. ${item[0]} - R$ ${item[1].toLocaleString('pt-BR')}`).join('\n');
+        }
+        if (normalized.includes('recarregar') || normalized.includes('atualizar fluxo')) {
+            this.core?.ui?.setPaymentsSkeleton?.(true);
+            await this.core?.data?.loadFromBackend?.(true, company);
+            this.core?.ui?.renderPaymentsTable?.();
+            this.core?.ui?.updateStats?.();
+            this.core?.ui?.initCharts?.();
+            this.core?.ui?.setPaymentsSkeleton?.(false);
+            return `Fluxo de ${company} recarregado.`;
+        }
+        if (normalized.includes('exportar')) {
+            if (!this.can('export_payments')) return 'Você não tem permissão para exportar pagamentos.';
+            this.core?.data?.export?.(company);
+            return `Exportação iniciada para ${company}.`;
+        }
+        if (normalized.includes('importar')) {
+            if (!this.can('import_payments')) return 'Você não tem permissão para importar pagamentos.';
+            const btn = document.getElementById('btnImportPayments');
+            if (btn) {
+                btn.click();
+                return 'Selecione o arquivo para importação.';
+            }
+            return 'Botão de importação não está disponível nesta tela.';
+        }
+        if ((normalized.includes('abrir') || normalized.includes('ir para')) && normalized.includes('auditoria')) {
+            if (!this.can('audit_access')) return 'Você não tem permissão para acessar auditoria.';
+            this.core?.ui?.navigate?.('audit', document.querySelector('[data-nav="audit"]'));
+            return 'Aba de auditoria aberta.';
+        }
+
+        const known = this.learning.get(`q:${normalized}`);
+        if (known && known.size) {
+            return Array.from(known)[0];
+        }
+        return `Não entendi completamente. Tente: "Resumo da empresa atual", "Quantos pendentes?" ou "Top 5 centros".`;
+    }
+
+    async sendMessage() {
+        this.init();
+        const raw = this.inputEl ? this.inputEl.value : '';
+        const text = String(raw || '').trim();
+        if (!text) return;
+        this.inputEl.value = '';
+        this.addMessage('user', text);
+        try {
+            const reply = await this.runCommand(text);
+            this.addMessage('assistant', reply);
+        } catch (error) {
+            this.addMessage('assistant', 'Falha ao executar comando no assistente.');
+        }
+    }
 }
 
 // Barramento de contexto do sistema
@@ -5293,6 +5777,16 @@ function initDomBindings() {
         });
     });
 
+    const refreshActiveSessionsButton = document.getElementById('btnRefreshActiveSessions');
+    if (refreshActiveSessionsButton) {
+        refreshActiveSessionsButton.addEventListener('click', function () {
+            if (!isAdminUser(system?.currentUser)) return;
+            system?.admin?.refreshActiveSessionsFromApi?.().then(() => {
+                system?.ui?.renderActiveSessionsTable?.();
+            });
+        });
+    }
+
     document.querySelectorAll('[data-audit-tab]').forEach(button => {
         button.addEventListener('click', function() {
             const tab = this.getAttribute('data-audit-tab');
@@ -5544,12 +6038,6 @@ function initDomBindings() {
     } // ALTERADO
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initDomBindings);
-} else {
-    initDomBindings();
-}
-
 // Test function to verify DMF_CONTEXT updates
 function testDMFContextUpdates() {
     console.log('Initial DMF_CONTEXT:', window.DMF_CONTEXT);
@@ -5589,6 +6077,15 @@ function testDMFContextUpdates() {
 
 const system = new DMFSystem();
 window.system = system;
+const assistant = new SystemAssistant(system);
+window.assistant = assistant;
+assistant.init();
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDomBindings);
+} else {
+    initDomBindings();
+}
 
 // Hard logout for production: clear session and force UI reset
 window.dmfLogout = function dmfLogout() {

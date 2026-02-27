@@ -2,7 +2,7 @@
    Must be external JS because CSP in production blocks inline scripts. */
 (async function loadAppWithFragments() {
     try {
-        const ASSET_VERSION = '20260221-f8';
+        const ASSET_VERSION = '20260227-f10';
         const sections = document.querySelectorAll('[data-fragment]');
 
         for (const section of sections) {
@@ -26,9 +26,8 @@
             document.body.appendChild(script);
         });
 
-        const assistant = document.createElement('script');
-        assistant.src = 'assistant.js?v=' + encodeURIComponent(ASSET_VERSION);
-        document.body.appendChild(assistant);
+        // O assistente moderno já é inicializado dentro de script.js.
+        // Evita carregar assistant.js legado para não sobrescrever o novo comportamento.
     } catch (error) {
         console.error('Erro ao carregar a interface:', error);
         const login = document.getElementById('loginSection');
@@ -55,4 +54,5 @@
         }
     }
 })();
+
 
